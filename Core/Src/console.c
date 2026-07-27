@@ -45,7 +45,9 @@ void Console_ProcessCommand(char *cmd)
     }
     else if (strcmp(cmd, "version") == 0)
     {
-        UART_SendString("431 DSP Analyzer v0.5\r\n");
+        UART_SendString(
+            "431 DSP Analyzer\r\n"
+            "Version 0.5\r\n");
     }
     else if (strcmp(cmd, "status") == 0)
     {
