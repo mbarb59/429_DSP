@@ -8,17 +8,19 @@ void ADC_Init(void)
 
     /* ADC kernel clock = SYSCLK */
     RCC->CCIPR &= ~(3UL << 28);
-    RCC->CCIPR |=  (1UL << 28);
+    RCC->CCIPR |= (1UL << 28);
 
     /* ADC common clock = PCLK / 4 */
     ADC12_COMMON->CCR &= ~(3UL << 16);
-    ADC12_COMMON->CCR |=  (1UL << 16);
+    ADC12_COMMON->CCR |= (1UL << 16);
 
     /* PA0 = ADC1_IN1 */
     GPIOA->MODER |= (3UL << 0);
 
-    /* ADC setup */
+    /* Exit deep power-down */
     ADC1->CR &= ~ADC_CR_DEEPPWD;
+
+    /* Enable internal regulator */
     ADC1->CR |= ADC_CR_ADVREGEN;
 
     for (volatile uint32_t i = 0; i < 50000; i++)
@@ -39,7 +41,7 @@ void ADC_Init(void)
         }
     }
 
-    /* Delay after calibration */
+    /* Delay between calibration and enable */
     for (volatile uint32_t i = 0; i < 10000; i++)
     {
         __asm__("nop");
@@ -59,7 +61,11 @@ void ADC_Init(void)
         }
     }
 
-    /* Single conversion on channel 1 (PA0) */
+    /* Enable ADC DMA requests */
+    /*ADC1->CFGR |= ADC_CFGR_DMAEN;*/
+    /*ADC1->CFGR |= ADC_CFGR_DMACFG;*/
+
+    /* Channel 1 = PA0 */
     ADC1->SQR1 = (1UL << 6);
 
     /* Long sample time */

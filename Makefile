@@ -26,7 +26,8 @@ Core/Src/main.c \
 Core/Src/system_stm32g4xx.c \
 Core/Src/uart.c \
 Core/Src/console.c \
-Core/Src/adc.c 
+Core/Src/adc.c \
+Core/Src/capture.c
 
 
 ASM_SOURCES = \

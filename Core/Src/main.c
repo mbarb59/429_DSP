@@ -2,6 +2,7 @@
 #include "uart.h"
 #include "console.h"
 #include "adc.h"
+#include "capture.h"
 
 volatile int led_enabled = 1;
 
@@ -26,6 +27,7 @@ int main(void)
 
     UART_Init();
     ADC_Init();
+    DMA_Init();
 
     UART_SendString(
         "\r\n"
