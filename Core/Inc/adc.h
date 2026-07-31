@@ -5,5 +5,7 @@
 
 void ADC_Init(void);
 uint16_t ADC_Read(void);
+void ADC_EnableDMA(void);
+void ADC_DisableDMA(void);
 
 #endif

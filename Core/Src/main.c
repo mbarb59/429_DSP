@@ -29,7 +29,9 @@ int main(void)
     ADC_Init();
     DMA_Init();
 
-    UART_SendString(
+    NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+    
+UART_SendString(
         "\r\n"
         "431 DSP Analyzer\r\n"
         "Version 0.5\r\n"

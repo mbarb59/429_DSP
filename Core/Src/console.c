@@ -5,8 +5,9 @@
 #include "uart.h"
 #include "adc.h"
 #include "capture.h"
+#include "dsp.h"
 #include "stm32g431xx.h"
-
+#include "fft.h"
 
 extern volatile int led_enabled;
 
@@ -41,39 +42,43 @@ void Console_ProcessCommand(char *cmd)
             "\r\n"
             "431 DSP Analyzer Commands\r\n"
             "-------------------------\r\n"
-            "help       - Show command list\r\n"
-            "version    - Show firmware version\r\n"
-            "status     - Show system status\r\n"
-            "adc        - Read ADC channel\r\n"
-            "adcavg     - Average 64 ADC samples\r\n"
-            "adcminmax  - Show min/max of 64 samples\r\n"
-            "adcstream  - Stream 32 ADC samples\r\n"
-            "capture    - Capture 256 samples\r\n"
-            "dump       - Dump capture buffer\r\n"
-            "led on     - Enable heartbeat LED\r\n"
-            "led off    - Disable heartbeat LED\r\n"
-            "bufferstats - Analyze captured buffer\r\n"
-            "capturetime - Measure capture speed\r\n");
+            "help         - Show command list\r\n"
+            "version      - Show firmware version\r\n"
+            "status       - Show system status\r\n"
+            "adc          - Read ADC channel\r\n"
+            "adcavg       - Average 64 ADC samples\r\n"
+            "adcminmax    - Show min/max of 64 samples\r\n"
+            "adcstream    - Stream 32 ADC samples\r\n"
+            "capture      - CPU capture\r\n"
+            "capturedma   - DMA capture\r\n"
+            "dump         - Dump sample buffer\r\n"
+            "bufferstats  - Analyze sample buffer\r\n"
+            "capturetime  - Measure capture speed\r\n"
+            "peak         - Largest sample\r\n"
+            "dc           - Average sample value\r\n"
+            "range        - Show min/max range\r\n"
+            "fft          - Analyze sample buffer\r\n"
+            "led on       - Enable heartbeat LED\r\n"
+            "led off      - Disable heartbeat LED\r\n");
     }
     else if (strcmp(cmd, "version") == 0)
     {
         UART_SendString(
             "431 DSP Analyzer\r\n"
-            "Version 0.8\r\n");
+            "Version 1.0\r\n");
     }
     else if (strcmp(cmd, "status") == 0)
     {
         UART_SendString(
             "Board: STM32G431KB\r\n"
             "ADC: Enabled\r\n"
+            "DMA: Enabled\r\n"
             "Status: OK\r\n");
     }
     else if (strcmp(cmd, "adc") == 0)
     {
-        uint16_t value = ADC_Read();
-
         UART_SendString("ADC1 = ");
-        UART_SendUInt(value);
+        UART_SendUInt(ADC_Read());
         UART_SendString("\r\n");
     }
     else if (strcmp(cmd, "adcavg") == 0)
@@ -132,7 +137,26 @@ void Console_ProcessCommand(char *cmd)
         Capture_Samples();
 
         UART_SendString("Capture complete\r\n");
-        UART_SendString("Samples = 256\r\n");
+        UART_SendString("Samples = ");
+        UART_SendUInt(sampleCount);
+        UART_SendString("\r\n");
+    }
+    else if (strcmp(cmd, "capturedma") == 0)
+    {
+        ADC_EnableDMA();
+
+        DMA_CaptureSamples();
+
+        while (!captureComplete)
+        {
+        }
+
+        ADC_DisableDMA();
+
+        UART_SendString("DMA Capture Complete\r\n");
+        UART_SendString("Samples = ");
+        UART_SendUInt(sampleCount);
+        UART_SendString("\r\n");
     }
     else if (strcmp(cmd, "dump") == 0)
     {
@@ -149,6 +173,101 @@ void Console_ProcessCommand(char *cmd)
             }
         }
     }
+    else if (strcmp(cmd, "bufferstats") == 0)
+    {
+        if (sampleCount == 0)
+        {
+            UART_SendString("Buffer Empty\r\n");
+        }
+        else
+        {
+            uint32_t sum = 0;
+            uint16_t min = 4095;
+            uint16_t max = 0;
+
+            for (uint32_t i = 0; i < sampleCount; i++)
+            {
+                uint16_t value = sampleBuffer[i];
+
+                sum += value;
+
+                if (value < min)
+                {
+                    min = value;
+                }
+
+                if (value > max)
+                {
+                    max = value;
+                }
+            }
+
+            UART_SendString("Samples = ");
+            UART_SendUInt(sampleCount);
+            UART_SendString("\r\n");
+
+            UART_SendString("Min = ");
+            UART_SendUInt(min);
+            UART_SendString("\r\n");
+
+            UART_SendString("Max = ");
+            UART_SendUInt(max);
+            UART_SendString("\r\n");
+
+            UART_SendString("Average = ");
+            UART_SendUInt(sum / sampleCount);
+            UART_SendString("\r\n");
+        }
+    }
+    else if (strcmp(cmd, "peak") == 0)
+    {
+        UART_SendString("Peak = ");
+        UART_SendUInt(DSP_Peak());
+        UART_SendString("\r\n");
+    }
+    else if (strcmp(cmd, "dc") == 0)
+    {
+        UART_SendString("DC = ");
+        UART_SendUInt(DSP_Average());
+        UART_SendString("\r\n");
+    }
+    else if (strcmp(cmd, "range") == 0)
+    {
+        UART_SendString("Min = ");
+        UART_SendUInt(DSP_Min());
+        UART_SendString("\r\n");
+
+        UART_SendString("Max = ");
+        UART_SendUInt(DSP_Max());
+        UART_SendString("\r\n");
+
+        UART_SendString("Range = ");
+        UART_SendUInt(DSP_Max() - DSP_Min());
+        UART_SendString("\r\n");
+    }
+    else if (strcmp(cmd, "capturetime") == 0)
+    {
+        uint32_t start;
+        uint32_t stop;
+
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        DWT->CYCCNT = 0;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+        start = DWT->CYCCNT;
+
+        Capture_Samples();
+
+        stop = DWT->CYCCNT;
+
+        UART_SendString("Samples = ");
+        UART_SendUInt(sampleCount);
+        UART_SendString("\r\n");
+
+        UART_SendString("Cycles = ");
+        UART_SendUInt(stop - start);
+        UART_SendString("\r\n");
+    }
     else if (strcmp(cmd, "led on") == 0)
     {
         led_enabled = 1;
@@ -159,80 +278,38 @@ void Console_ProcessCommand(char *cmd)
         led_enabled = 0;
         UART_SendString("LED Disabled\r\n");
     }
-    
-    else if (strcmp(cmd, "bufferstats") == 0)
-    {
+
+   else if (strcmp(cmd, "fft") == 0)
+{
     if (sampleCount == 0)
     {
-        UART_SendString("Buffer Empty\r\n");
+        UART_SendString(
+            "No Samples\r\n"
+            "Run capture or capturedma first\r\n");
     }
     else
     {
-        uint32_t sum = 0;
-        uint16_t min = 4095;
-        uint16_t max = 0;
+        FFT_Process();
 
-        for (uint32_t i = 0; i < sampleCount; i++)
-        {
-            uint16_t value = sampleBuffer[i];
+        UART_SendString("FFT Analysis\r\n");
 
-            sum += value;
-
-            if (value < min)
-            {
-                min = value;
-            }
-
-            if (value > max)
-            {
-                max = value;
-            }
-        }
-
-        UART_SendString("Samples = ");
-        UART_SendUInt(sampleCount);
+        UART_SendString("Peak Sample = ");
+        UART_SendUInt(FFT_GetPeak());
         UART_SendString("\r\n");
 
-        UART_SendString("Min = ");
-        UART_SendUInt(min);
+        UART_SendString("DC Level = ");
+        UART_SendUInt(FFT_GetDC());
         UART_SendString("\r\n");
-
-        UART_SendString("Max = ");
-        UART_SendUInt(max);
-        UART_SendString("\r\n");
-
-        UART_SendString("Average = ");
-        UART_SendUInt(sum / sampleCount);
-        UART_SendString("\r\n");
+        UART_SendString("RMS = ");
+	UART_SendUInt(FFT_GetRMS());
+	UART_SendString("\r\n");
     }
-    }   else if (strcmp(cmd, "capturetime") == 0)
-{
-    uint32_t start;
-    uint32_t stop;
-
-    /* Enable DWT cycle counter */
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-
-    start = DWT->CYCCNT;
-
-    Capture_Samples();
-
-    stop = DWT->CYCCNT;
-
-    UART_SendString("Samples = ");
-    UART_SendUInt(sampleCount);
-    UART_SendString("\r\n");
-
-    UART_SendString("Cycles = ");
-    UART_SendUInt(stop - start);
-    UART_SendString("\r\n");
-
-}    
-    else if (cmd[0] != '\0')
+}
+ 
+   else if (cmd[0] != '\0')
     {
         UART_SendString("Unknown Command\r\n");
     }
+
     UART_SendString("> ");
 }

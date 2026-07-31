@@ -19,8 +19,12 @@ void Capture_Samples(void)
 void DMA_Init(void)
 {
     RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMAMUX1EN;
 
     DMA1_Channel1->CCR = 0;
+    /* Route ADC1 requests to DMA1 Channel1 */    
+    DMAMUX1_Channel0->CCR = 5;
+    captureComplete = DMAMUX1_Channel0->CCR;
 }
 
 void DMA_CaptureSamples(void)
@@ -43,11 +47,21 @@ void DMA_CaptureSamples(void)
         DMA_CCR_PSIZE_0 |
         DMA_CCR_MSIZE_0 |
         DMA_CCR_TCIE;
+    
+    /* Clear any old transfer-complete flag */
+    DMA1->IFCR = DMA_IFCR_CTCIF1;
+
+    DMA1_Channel1->CCR |= DMA_CCR_EN;    // Enable
+
+      /* Start ADC conversion */
+    ADC1->CR |= ADC_CR_ADSTART;
 }
 
 void DMA1_Channel1_IRQHandler(void)
 {
     DMA1->IFCR = DMA_IFCR_CTCIF1;
+
+    sampleCount = SAMPLE_COUNT;
 
     captureComplete = 1;
 }

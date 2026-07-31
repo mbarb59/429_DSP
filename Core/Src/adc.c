@@ -90,3 +90,17 @@ uint16_t ADC_Read(void)
 
     return (uint16_t)ADC1->DR;
 }
+
+void ADC_EnableDMA(void)
+{
+    ADC1->CFGR |= ADC_CFGR_DMAEN;
+    ADC1->CFGR |= ADC_CFGR_DMACFG;
+
+    ADC1->CFGR |= ADC_CFGR_CONT;
+}
+
+void ADC_DisableDMA(void)
+{
+    ADC1->CFGR &= ~ADC_CFGR_DMAEN;
+    ADC1->CFGR &= ~ADC_CFGR_DMACFG;
+}
