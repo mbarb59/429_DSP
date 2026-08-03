@@ -59,7 +59,10 @@ void Console_ProcessCommand(char *cmd)
             "range        - Show min/max range\r\n"
             "fft          - Analyze sample buffer\r\n"
             "led on       - Enable heartbeat LED\r\n"
-            "led off      - Disable heartbeat LED\r\n");
+            "led off      - Disable heartbeat LED\r\n"
+            "dmarate      - Measure DMA capture rate\r\n"
+            "dcdump       - Dump DC-removed samples\r\n"
+            "windowdump - Dump Hann-windowed samples\r\n");
     }
     else if (strcmp(cmd, "version") == 0)
     {
@@ -303,10 +306,79 @@ void Console_ProcessCommand(char *cmd)
         UART_SendString("RMS = ");
 	UART_SendUInt(FFT_GetRMS());
 	UART_SendString("\r\n");
+        UART_SendString("Bin Width = ");
+        UART_SendUInt(FFT_GetBinWidth());
+        UART_SendString(" Hz\r\n");
     }
 }
- 
-   else if (cmd[0] != '\0')
+   else if (strcmp(cmd, "dmarate") == 0)
+{
+    uint32_t start;
+    uint32_t stop;
+
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    captureComplete = 0;
+
+    start = DWT->CYCCNT;
+
+    ADC_EnableDMA();
+    DMA_CaptureSamples();
+
+    while (!captureComplete)
+    {
+    }
+
+    stop = DWT->CYCCNT;
+
+    ADC_DisableDMA();
+
+    dmaCaptureCycles = stop - start;
+   
+
+    sampleRate =
+    (uint32_t)(
+        ((uint64_t)170000000UL * SAMPLE_COUNT) /
+        dmaCaptureCycles);
+
+    UART_SendString("Samples = ");
+    UART_SendUInt(sampleCount);
+    UART_SendString("\r\n");
+
+    UART_SendString("DMA Cycles = ");
+    UART_SendUInt(dmaCaptureCycles);
+    UART_SendString("\r\n");
+    UART_SendString("Sample Rate = ");
+    UART_SendUInt(sampleRate);
+    UART_SendString(" SPS\r\n");
+}
+    else if (strcmp(cmd, "dcdump") == 0)
+{
+    FFT_Process();
+
+    for (uint32_t i = 0; i < 16; i++)
+    {
+        UART_SendUInt(
+            (uint32_t)(FFT_GetCenteredSample(i) + 32768));
+
+        UART_SendString("\r\n");
+    }
+}
+    else if (strcmp(cmd, "windowdump") == 0)
+{
+    FFT_Process();
+
+    for (uint32_t i = 0; i < 16; i++)
+    {
+        UART_SendUInt(
+            (uint32_t)(FFT_GetWindowedSample(i) + 32768));
+
+        UART_SendString("\r\n");
+    }
+}
+    else if (cmd[0] != '\0')
     {
         UART_SendString("Unknown Command\r\n");
     }

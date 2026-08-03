@@ -4,6 +4,9 @@
 
 uint16_t sampleBuffer[SAMPLE_COUNT];
 uint32_t sampleCount = 0;
+uint32_t dmaCaptureCycles = 0;
+uint32_t sampleRate = 0;
+
 volatile int captureComplete = 0;
 
 void Capture_Samples(void)

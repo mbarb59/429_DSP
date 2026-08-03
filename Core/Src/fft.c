@@ -3,10 +3,19 @@
 
 #include "fft.h"
 #include "capture.h"
+#include "arm_math.h"
+
+#define FFT_SIZE SAMPLE_COUNT
 
 static uint16_t fftPeak = 0;
 static uint32_t fftDC = 0;
 static uint32_t fftRMS = 0;
+
+float centeredBuffer[FFT_SIZE];
+float windowedBuffer[FFT_SIZE];
+float fftMagnitude[FFT_SIZE / 2];
+uint32_t fftPeakBin;
+uint32_t fftPeakFrequency;
 
 void FFT_Process(void)
 {
@@ -22,6 +31,7 @@ void FFT_Process(void)
         return;
     }
 
+    /* Basic statistics */
     for (uint32_t i = 0; i < sampleCount; i++)
     {
         uint32_t sample = sampleBuffer[i];
@@ -39,6 +49,28 @@ void FFT_Process(void)
 
     fftRMS = (uint32_t)sqrt(
         (double)sumSquares / sampleCount);
+
+    /* Remove DC offset */
+    for (uint32_t i = 0; i < sampleCount; i++)
+    {
+        centeredBuffer[i] =
+            (float)sampleBuffer[i] -
+            (float)fftDC;
+    }
+
+    /* Apply Hann window */
+    for (uint32_t i = 0; i < sampleCount; i++)
+    {
+        float window =
+            0.5f *
+            (1.0f -
+             cosf(
+                 (2.0f * PI * i) /
+                 (sampleCount - 1)));
+
+        windowedBuffer[i] =
+            centeredBuffer[i] * window;
+    }
 }
 
 uint16_t FFT_GetPeak(void)
@@ -54,4 +86,34 @@ uint32_t FFT_GetDC(void)
 uint32_t FFT_GetRMS(void)
 {
     return fftRMS;
+}
+
+float FFT_GetCenteredSample(uint32_t index)
+{
+    if (index >= sampleCount)
+    {
+        return 0.0f;
+    }
+
+    return centeredBuffer[index];
+}
+
+float FFT_GetWindowedSample(uint32_t index)
+{
+    if (index >= sampleCount)
+    {
+        return 0.0f;
+    }
+
+    return windowedBuffer[index];
+}
+
+uint32_t FFT_GetBinWidth(void)
+{
+    if (sampleRate == 0)
+    {
+        return 0;
+    }
+
+    return sampleRate / FFT_SIZE;
 }

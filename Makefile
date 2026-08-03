@@ -19,7 +19,9 @@ C_DEFS = \
 C_INCLUDES = \
 -ICore/Inc \
 -IDrivers/CMSIS/Core/Include \
--IDrivers/CMSIS/Device/ST/STM32G4xx/Include
+-IDrivers/CMSIS/Device/ST/STM32G4xx/Include \
+-ICMSIS-DSP/Include \
+-ICMSIS-DSP/PrivateInclude
 
 C_SOURCES = \
 Core/Src/main.c \
@@ -29,8 +31,10 @@ Core/Src/console.c \
 Core/Src/adc.c \
 Core/Src/capture.c \
 Core/Src/dsp.c \
-Core/Src/fft.c
-
+Core/Src/fft.c \
+CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_f32.c \
+CMSIS-DSP/Source/TransformFunctions/arm_cfft_f32.c \
+CMSIS-DSP/Source/CommonTables/arm_common_tables.c 
 
 ASM_SOURCES = \
 Startup/startup_stm32g431rbtx.s

@@ -8,6 +8,8 @@
 extern uint16_t sampleBuffer[SAMPLE_COUNT];
 extern uint32_t sampleCount;
 extern volatile int captureComplete;
+extern uint32_t dmaCaptureCycles;
+extern uint32_t sampleRate;
 
 void Capture_Samples(void);
 
