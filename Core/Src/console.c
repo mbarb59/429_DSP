@@ -327,9 +327,11 @@ void Console_ProcessCommand(char *cmd)
     ADC_EnableDMA();
     DMA_CaptureSamples();
 
-    while (!captureComplete)
-    {
-    }
+   uint32_t timeout = 10000000;
+
+   while (!captureComplete && timeout--)
+   {
+   }
 
     stop = DWT->CYCCNT;
 

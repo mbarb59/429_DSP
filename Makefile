@@ -31,10 +31,8 @@ Core/Src/console.c \
 Core/Src/adc.c \
 Core/Src/capture.c \
 Core/Src/dsp.c \
-Core/Src/fft.c \
-CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_f32.c \
-CMSIS-DSP/Source/TransformFunctions/arm_cfft_f32.c \
-CMSIS-DSP/Source/CommonTables/arm_common_tables.c 
+Core/Src/fft.c 
+
 
 ASM_SOURCES = \
 Startup/startup_stm32g431rbtx.s

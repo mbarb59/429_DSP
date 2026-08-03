@@ -3,6 +3,7 @@
 #include "console.h"
 #include "adc.h"
 #include "capture.h"
+#include "fft.h"
 
 volatile int led_enabled = 1;
 
@@ -28,6 +29,7 @@ int main(void)
     UART_Init();
     ADC_Init();
     DMA_Init();
+ 
 
     NVIC_EnableIRQ(DMA1_Channel1_IRQn);
     
