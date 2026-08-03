@@ -1,4 +1,4 @@
-TARGET = 431_DSP
+TARGET = 429_DSP
 
 PREFIX = arm-none-eabi-
 
@@ -14,28 +14,19 @@ FLOAT_ABI = -mfloat-abi=hard
 MCU = $(CPU) -mthumb $(FPU) $(FLOAT_ABI)
 
 C_DEFS = \
--DSTM32G431xx
+-DSTM32F429xx
 
 C_INCLUDES = \
 -ICore/Inc \
 -IDrivers/CMSIS/Core/Include \
--IDrivers/CMSIS/Device/ST/STM32G4xx/Include \
--ICMSIS-DSP/Include \
--ICMSIS-DSP/PrivateInclude
+-IDrivers/CMSIS/Device/ST/STM32F4xx/Include
 
 C_SOURCES = \
 Core/Src/main.c \
-Core/Src/system_stm32g4xx.c \
-Core/Src/uart.c \
-Core/Src/console.c \
-Core/Src/adc.c \
-Core/Src/capture.c \
-Core/Src/dsp.c \
-Core/Src/fft.c 
-
+Core/Src/system_stm32f4xx.c
 
 ASM_SOURCES = \
-Startup/startup_stm32g431rbtx.s
+Startup/startup_stm32f429xx.s
 
 CFLAGS = \
 $(MCU) \
@@ -46,7 +37,7 @@ $(C_INCLUDES) \
 
 LDFLAGS = \
 $(MCU) \
--TLinker/STM32G431RBTX_FLASH.ld \
+-TLinker/STM32F429ZITX_FLASH.ld\
 -Wl,-Map=build/$(TARGET).map \
 -Wl,--gc-sections
 
