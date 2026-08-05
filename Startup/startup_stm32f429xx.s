@@ -107,15 +107,17 @@ LoopFillZerobss:
   cmp  r2, r3
   bcc  FillZerobss
 
-/* Call the clock system intitialization function.*/
+/* Call the clock system initialization function */
   bl  SystemInit
-/* Call static constructors */
-    bl __libc_init_array
-/* Call the application's entry point.*/
-  bl  main
-  bx  lr
-.size  Reset_Handler, .-Reset_Handler
 
+/* Jump directly to main */
+  bl  main
+
+/* Never return */
+Forever:
+  b Forever
+
+.size  Reset_Handler, .-Reset_Handler
 /**
  * @brief  This is the code that gets called when the processor receives an
  *         unexpected interrupt.  This simply enters an infinite loop, preserving

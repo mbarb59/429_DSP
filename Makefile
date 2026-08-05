@@ -23,7 +23,8 @@ C_INCLUDES = \
 
 C_SOURCES = \
 Core/Src/main.c \
-Core/Src/system_stm32f4xx.c
+Core/Src/system_stm32f4xx.c \
+Core/Src/uart.c
 
 ASM_SOURCES = \
 Startup/startup_stm32f429xx.s
