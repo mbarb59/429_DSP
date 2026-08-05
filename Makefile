@@ -19,12 +19,24 @@ C_DEFS = \
 C_INCLUDES = \
 -ICore/Inc \
 -IDrivers/CMSIS/Core/Include \
--IDrivers/CMSIS/Device/ST/STM32F4xx/Include
+-IDrivers/CMSIS/Device/ST/STM32F4xx/Include \
+-IDrivers/STM32F4xx_HAL_Driver/Inc \
+-ICore/Inc
 
 C_SOURCES = \
 Core/Src/main.c \
 Core/Src/system_stm32f4xx.c \
-Core/Src/uart.c
+Core/Src/uart.c \
+Core/Src/ltdc_ili9341.c \
+Core/Src/f429_sdram.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_ltdc.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_sdram.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
 
 ASM_SOURCES = \
 Startup/startup_stm32f429xx.s
