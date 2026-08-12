@@ -3,9 +3,12 @@
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_hal_ltdc.h"
 #include "ltdc_ili9341.h"
+#include "uart.h"
 
 #include <stdint.h>
 #include <stddef.h>
+//#include <stdio.h>
+
 
 //#include "py/misc.h"
 //#include "py/obj.h"
@@ -13,6 +16,8 @@
 #ifndef LCD_DBG
 #define LCD_DBG(...)
 #endif
+
+#define LCD_MARK(msg) UART_SendString(msg "\r\n")
 
 #ifndef ILI9341_MADCTL
 #define ILI9341_MADCTL (0x48)
@@ -55,9 +60,9 @@
 #define HSYNC   (9)
 #define HBP     (29)
 #define HFP     (2)
-#define VSYNC   (1)
-#define VBP     (3)
-#define VFP     (2)
+#define VSYNC   (2)
+#define VBP     (2)
+#define VFP     (4)
 
 static LTDC_HandleTypeDef hltdc;
 static SPI_HandleTypeDef hspi_lcd;
@@ -165,109 +170,187 @@ HAL_StatusTypeDef ili9341_send_data(const uint8_t *data, size_t len) {
     return st;
 }
 
-HAL_StatusTypeDef ili9341_init_sequence(void) {
-    if (ili9341_send_cmd(0x01) != HAL_OK) {
+HAL_StatusTypeDef ili9341_init_sequence(void)
+{
+    if (ili9341_send_cmd(0x01) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     HAL_Delay(5);
 
-    if (ili9341_send_cmd(0x11) != HAL_OK) {
+    if (ili9341_send_cmd(0x11) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     HAL_Delay(120);
 
-    if (ili9341_send_cmd(0xB0) != HAL_OK) {
+    if (ili9341_send_cmd(0xB0) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     {
         uint8_t d = 0xC2;
-        if (ili9341_send_data(&d, 1) != HAL_OK) {
+        if (ili9341_send_data(&d, 1) != HAL_OK)
+        {
             return HAL_ERROR;
         }
     }
 
-    if (ili9341_send_cmd(0x3A) != HAL_OK) {
+    if (ili9341_send_cmd(0x3A) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     {
         uint8_t d = 0x55;
-        if (ili9341_send_data(&d, 1) != HAL_OK) {
+        if (ili9341_send_data(&d, 1) != HAL_OK)
+        {
             return HAL_ERROR;
         }
     }
 
-    if (ili9341_send_cmd(0x36) != HAL_OK) {
+    if (ili9341_send_cmd(0x36) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     {
         uint8_t d = ILI9341_MADCTL;
-        if (ili9341_send_data(&d, 1) != HAL_OK) {
+        if (ili9341_send_data(&d, 1) != HAL_OK)
+        {
             return HAL_ERROR;
         }
     }
 
-    if (ili9341_send_cmd(0xB2) != HAL_OK) {
+    if (ili9341_send_cmd(0xB2) != HAL_OK)
+    {
         return HAL_ERROR;
     }
     {
         uint8_t d[5] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
-        if (ili9341_send_data(d, 5) != HAL_OK) {
+        if (ili9341_send_data(d, 5) != HAL_OK)
+        {
             return HAL_ERROR;
         }
     }
 
-    if (ili9341_send_cmd(0xB6) != HAL_OK) {
-        return HAL_ERROR;
-    }
+if (ili9341_send_cmd(0xC0) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d = 0x23;
+    if (ili9341_send_data(&d, 1) != HAL_OK)
     {
-        uint8_t d[3] = {0x0A, 0x82, 0x27};
-        if (ili9341_send_data(d, 3) != HAL_OK) {
-            return HAL_ERROR;
-        }
-    }
-
-    if (ili9341_send_cmd(0xF6) != HAL_OK) {
         return HAL_ERROR;
     }
-    {
-        uint8_t d[3] = {0x01, 0x00, 0x06};
-        if (ili9341_send_data(d, 3) != HAL_OK) {
-            return HAL_ERROR;
-        }
-    }
-
-    if (ili9341_send_cmd(0x29) != HAL_OK) {
-        return HAL_ERROR;
-    }
-    HAL_Delay(20);
-
-    gpio_out(LCD_BL_GPIO_PORT, LCD_BL_PIN, GPIO_PIN_SET);
-    HAL_Delay(10);
-
-    return HAL_OK;
 }
 
-static HAL_StatusTypeDef ltdc_clock_init(void) {
-    __HAL_RCC_LTDC_CLK_DISABLE();
+if (ili9341_send_cmd(0xC1) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d = 0x10;
+    if (ili9341_send_data(&d, 1) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+if (ili9341_send_cmd(0xC5) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+if (ili9341_send_cmd(0xC7) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d = 0x86;
 
+    if (ili9341_send_data(&d, 1) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+}
+{
+    uint8_t d[2] = {0x3E, 0x28};
+    if (ili9341_send_data(d, 2) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+}
+}
+
+if (ili9341_send_cmd(0xB6) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d[4] = {0x0A, 0xA2, 0x27, 0x04};
+    if (ili9341_send_data(d, 4) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+}
+
+if (ili9341_send_cmd(0xF6) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d[3] = {0x00, 0x00, 0x06};
+    if (ili9341_send_data(d, 3) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+}
+
+if (ili9341_send_cmd(0xB1) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+{
+    uint8_t d[2] = {0x00, 0x18};
+    if (ili9341_send_data(d, 2) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+}
+
+if (ili9341_send_cmd(0x29) != HAL_OK)
+{
+    return HAL_ERROR;
+}
+
+HAL_Delay(20);
+
+gpio_out(LCD_BL_GPIO_PORT, LCD_BL_PIN, GPIO_PIN_SET);
+HAL_Delay(10);
+
+return HAL_OK;
+}
+
+static HAL_StatusTypeDef ltdc_clock_init(void)
+{
     RCC_PeriphCLKInitTypeDef p = {0};
+
+    LCD_MARK("CLK A");
+
     p.PeriphClockSelection = RCC_PERIPHCLK_LTDC;
     p.PLLSAI.PLLSAIN = 192;
     p.PLLSAI.PLLSAIR = 4;
-    p.PLLSAIDivR = RCC_PLLSAIDIVR_4;
+    p.PLLSAIDivR = RCC_PLLSAIDIVR_8;
 
-    if (HAL_RCCEx_PeriphCLKConfig(&p) != HAL_OK) {
-        LCD_DBG("LTDC clock config failed\n");
+    if (HAL_RCCEx_PeriphCLKConfig(&p) != HAL_OK)
+    {
+        LCD_MARK("CLK FAIL");
         return HAL_ERROR;
     }
 
-    __HAL_RCC_LTDC_FORCE_RESET();
-    __HAL_RCC_LTDC_RELEASE_RESET();
     __HAL_RCC_LTDC_CLK_ENABLE();
+
+    LCD_MARK("CLK OK");
 
     return HAL_OK;
 }
-
 static void ltdc_pins_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -316,7 +399,7 @@ static HAL_StatusTypeDef ltdc_core_init_background_only(void) {
     hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
 #endif
 
-    hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IPC;
+    hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IIPC;
 
     hltdc.Init.HorizontalSync = HSYNC - 1;
     hltdc.Init.AccumulatedHBP = HSYNC + HBP - 1;
@@ -328,123 +411,194 @@ static HAL_StatusTypeDef ltdc_core_init_background_only(void) {
     hltdc.Init.AccumulatedActiveH = VSYNC + VBP + LCD_HEIGHT - 1;
     hltdc.Init.TotalHeigh = VSYNC + VBP + LCD_HEIGHT + VFP - 1;
 
-    hltdc.Init.Backcolor.Red = 255;
-    hltdc.Init.Backcolor.Green = 0;
-    hltdc.Init.Backcolor.Blue = 255;
+    hltdc.Init.Backcolor.Red = 0;
+    hltdc.Init.Backcolor.Green = 255;
+    hltdc.Init.Backcolor.Blue = 0;
 
-    if (HAL_LTDC_Init(&hltdc) != HAL_OK) {
-        LCD_DBG("HAL_LTDC_Init failed\n");
+   LCD_MARK("CORE A");
+
+if (HAL_LTDC_Init(&hltdc) != HAL_OK)
+{
+    LCD_MARK("CORE FAIL");
+    return HAL_ERROR;
+}
+UART_SendString("LTDC_GCR=");
+UART_SendHex32(LTDC->GCR);
+UART_SendString("\r\n");
+
+UART_SendString("LTDC_AWCR=");
+UART_SendHex32(LTDC->AWCR);
+UART_SendString("\r\n");
+
+UART_SendString("LTDC_TWCR=");
+UART_SendHex32(LTDC->TWCR);
+UART_SendString("\r\n");
+LCD_MARK("CORE B");
+
+__HAL_LTDC_RELOAD_CONFIG(&hltdc);
+
+LCD_MARK("CORE C");
+
+return HAL_OK;
+}
+
+HAL_StatusTypeDef f429_ltdc_layer0_rgb565(uint32_t fb_addr,
+                                          uint16_t width,
+                                          uint16_t height)
+{
+    LTDC_LayerCfgTypeDef layer = {0};
+
+    /* Validate the arguments. */
+    if ((fb_addr == 0U) || (width == 0U) || (height == 0U))
+    {
         return HAL_ERROR;
     }
 
-    __HAL_LTDC_RELOAD_CONFIG(&hltdc);
-    return HAL_OK;
-}
-
-HAL_StatusTypeDef f429_ltdc_layer0_rgb565(uint32_t fb_addr, uint16_t width, uint16_t height) {
-    LTDC_LayerCfgTypeDef layer = {0};
-
-    if (!lcd_inited) {
-        if (f429_ltdc_init() != HAL_OK) {
+    /* Initialize the LCD and LTDC if needed. */
+    if (!lcd_inited)
+    {
+        if (f429_ltdc_init() != HAL_OK)
+        {
             return HAL_ERROR;
         }
     }
 
-    layer.WindowX0 = 0;
+    /* Configure the visible Layer 0 window. */
+    layer.WindowX0 = 0U;
     layer.WindowX1 = width;
-    layer.WindowY0 = 0;
+    layer.WindowY0 = 0U;
     layer.WindowY1 = height;
 
+    /* Configure the RGB565 framebuffer. */
     layer.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
     layer.FBStartAdress = fb_addr;
-    layer.Alpha = 255;
-    layer.Alpha0 = 0;
-
-    layer.Backcolor.Red = 0;
-    layer.Backcolor.Green = 0;
-    layer.Backcolor.Blue = 0;
-
-    layer.BlendingFactor1 = LTDC_BLENDING_FACTOR1_PAxCA;
-    layer.BlendingFactor2 = LTDC_BLENDING_FACTOR2_PAxCA;
-
     layer.ImageWidth = width;
     layer.ImageHeight = height;
 
-    if (HAL_LTDC_ConfigLayer(&hltdc, &layer, 0) != HAL_OK) {
-        LCD_DBG("HAL_LTDC_ConfigLayer failed\n");
+    /* Make Layer 0 fully opaque. */
+    layer.Alpha = 255U;
+    layer.Alpha0 = 0U;
+
+    /* Default layer background color. */
+    layer.Backcolor.Red = 0U;
+    layer.Backcolor.Green = 0U;
+    layer.Backcolor.Blue = 0U;
+
+    /* Configure alpha blending. */
+    layer.BlendingFactor1 = LTDC_BLENDING_FACTOR1_PAxCA;
+    layer.BlendingFactor2 = LTDC_BLENDING_FACTOR2_PAxCA;
+
+    /* HAL layer 0 corresponds to the LTDC Layer 1 register block. */
+    if (HAL_LTDC_ConfigLayer(&hltdc, &layer, 0U) != HAL_OK)
+    {
         return HAL_ERROR;
     }
 
-    if (HAL_LTDC_SetAddress(&hltdc, fb_addr, 0) != HAL_OK) {
-        LCD_DBG("HAL_LTDC_SetAddress failed\n");
+    /* Ensure Layer 0 uses the requested framebuffer address. */
+    if (HAL_LTDC_SetAddress(&hltdc, fb_addr, 0U) != HAL_OK)
+    {
         return HAL_ERROR;
     }
 
-    __HAL_LTDC_LAYER_ENABLE(&hltdc, 0);
+    /* Enable the layer and load the new register values. */
+    __HAL_LTDC_LAYER_ENABLE(&hltdc, 0U);
     __HAL_LTDC_RELOAD_CONFIG(&hltdc);
 
-    layer0_configured = 1;
+    layer0_configured = 1U;
+
     return HAL_OK;
 }
-
-HAL_StatusTypeDef f429_ltdc_layer0_enable(int enable) {
-    if (!layer0_configured) {
+HAL_StatusTypeDef f429_ltdc_layer0_enable(int enable)
+{
+    if (!layer0_configured)
+    {
         return HAL_OK;
     }
 
-    if (enable) {
+    if (enable)
+    {
         __HAL_LTDC_LAYER_ENABLE(&hltdc, 0);
-    } else {
+    }
+    else
+    {
         __HAL_LTDC_LAYER_DISABLE(&hltdc, 0);
     }
 
     __HAL_LTDC_RELOAD_CONFIG(&hltdc);
+
     return HAL_OK;
 }
 
-uint16_t f429_lcd_width(void) {
+
+uint16_t f429_lcd_width(void)
+{
     return LCD_WIDTH;
 }
 
-uint16_t f429_lcd_height(void) {
+uint16_t f429_lcd_height(void)
+{
     return LCD_HEIGHT;
 }
-
-HAL_StatusTypeDef f429_ltdc_init(void) {
-    if (lcd_inited) {
+HAL_StatusTypeDef f429_ltdc_init(void)
+{
+    if (lcd_inited)
+    {
+        LCD_MARK("LTDC A0");
         return HAL_OK;
     }
 
-    LCD_DBG("init: spi\n");
-    if (ili9341_init_spi() != HAL_OK) {
+    LCD_MARK("LTDC A");
+
+    if (ili9341_init_spi() != HAL_OK)
+    {
+        LCD_MARK("LTDC FAIL A");
         return HAL_ERROR;
     }
 
-    LCD_DBG("init: reset\n");
-    if (ili9341_hw_reset() != HAL_OK) {
+    LCD_MARK("LTDC B");
+
+    if (ili9341_hw_reset() != HAL_OK)
+    {
+        LCD_MARK("LTDC FAIL B");
         return HAL_ERROR;
     }
 
-    LCD_DBG("init: ltdc clock\n");
-    if (ltdc_clock_init() != HAL_OK) {
+    LCD_MARK("LTDC C");
+
+    if (ltdc_clock_init() != HAL_OK)
+    {
+        LCD_MARK("LTDC FAIL C");
         return HAL_ERROR;
     }
 
-    LCD_DBG("init: ltdc pins\n");
+    LCD_MARK("LTDC D");
+
     ltdc_pins_init();
 
-    LCD_DBG("init: ltdc background\n");
-    if (ltdc_core_init_background_only() != HAL_OK) {
+    LCD_MARK("LTDC E");
+
+    if (ltdc_core_init_background_only() != HAL_OK)
+    {
+        LCD_MARK("LTDC FAIL E");
         return HAL_ERROR;
     }
 
-    LCD_DBG("init: panel sequence\n");
-    if (ili9341_init_sequence() != HAL_OK) {
+    LCD_MARK("LTDC F");
+
+    if (ili9341_init_sequence() != HAL_OK)
+    {
+        LCD_MARK("LTDC FAIL F");
         return HAL_ERROR;
     }
+
+    LCD_MARK("LTDC G");
 
     lcd_inited = 1;
 
-    LCD_DBG("init: done\n");
+    LCD_MARK("LTDC DONE");
+
     return HAL_OK;
 }
+
+    
+       
