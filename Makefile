@@ -29,6 +29,8 @@ Core/Src/system_stm32f4xx.c \
 Core/Src/uart.c \
 Core/Src/ltdc_ili9341.c \
 Core/Src/f429_sdram.c \
+Core/Src/adc.c \
+Core/Src/capture.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \

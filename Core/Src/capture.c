@@ -1,70 +1,270 @@
-#include "stm32g431xx.h"
-#include "capture.h"
+/*
+ * Timer-triggered sample capture for STM32F429I-DISC1.
+ *
+ * Capture path:
+ *
+ *   TIM2 update event / TRGO
+ *       -> ADC1 regular conversion
+ *       -> DMA2 Stream 0, Channel 0
+ *       -> sampleBuffer[]
+ */
+
+#include "stm32f4xx_hal.h"
 #include "adc.h"
+#include "capture.h"
+
+#include <stdbool.h>
+#include <stdint.h>
 
 uint16_t sampleBuffer[SAMPLE_COUNT];
-uint32_t sampleCount = 0;
-uint32_t dmaCaptureCycles = 0;
-uint32_t sampleRate = 0;
+uint32_t sampleCount;
+volatile int captureComplete;
+uint32_t dmaCaptureCycles;
+uint32_t sampleRate;
 
-volatile int captureComplete = 0;
+static uint32_t capture_start_cycles;
+static uint32_t configured_rate_hz = CAPTURE_DEFAULT_RATE_HZ;
+static uint8_t capture_initialized;
+
+static void dwt_cycle_counter_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static uint32_t tim2_input_clock_hz(void)
+{
+    uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
+
+    /* STM32F4 timer clock doubles when the APB1 prescaler is not 1. */
+    if ((RCC->CFGR & RCC_CFGR_PPRE1) == 0U)
+    {
+        return pclk1;
+    }
+
+    return pclk1 * 2U;
+}
+
+static void dma2_stream0_clear_flags(void)
+{
+    DMA2->LIFCR = DMA_LIFCR_CFEIF0 |
+                  DMA_LIFCR_CDMEIF0 |
+                  DMA_LIFCR_CTEIF0 |
+                  DMA_LIFCR_CHTIF0 |
+                  DMA_LIFCR_CTCIF0;
+}
+
+static void dma2_stream0_disable(void)
+{
+    DMA2_Stream0->CR &= ~DMA_SxCR_EN;
+
+    while ((DMA2_Stream0->CR & DMA_SxCR_EN) != 0U)
+    {
+    }
+}
+
+static void tim2_stop(void)
+{
+    TIM2->CR1 &= ~TIM_CR1_CEN;
+}
+
+static bool tim2_configure_sample_rate(uint32_t requested_rate_hz)
+{
+    uint32_t timer_clock_hz;
+    uint32_t period;
+
+    if (requested_rate_hz == 0U)
+    {
+        return false;
+    }
+
+    __HAL_RCC_TIM2_CLK_ENABLE();
+
+    timer_clock_hz = tim2_input_clock_hz();
+    period = (timer_clock_hz + (requested_rate_hz / 2U)) /
+             requested_rate_hz;
+
+    if (period == 0U)
+    {
+        return false;
+    }
+
+    tim2_stop();
+
+    TIM2->CR1 = 0U;
+    TIM2->CR2 = 0U;
+    TIM2->SMCR = 0U;
+    TIM2->DIER = 0U;
+    TIM2->PSC = 0U;
+    TIM2->ARR = period - 1U;
+    TIM2->CNT = 0U;
+
+    /* Load PSC and ARR before enabling TRGO. */
+    TIM2->EGR = TIM_EGR_UG;
+    TIM2->SR = 0U;
+
+    /* MMS = 010: TIM2 update event is used as TRGO. */
+    TIM2->CR2 = TIM_CR2_MMS_1;
+
+    configured_rate_hz = timer_clock_hz / period;
+    sampleRate = configured_rate_hz;
+
+    return true;
+}
+
+bool Capture_SetSampleRate(uint32_t rate_hz)
+{
+    if ((DMA2_Stream0->CR & DMA_SxCR_EN) != 0U)
+    {
+        return false;
+    }
+
+    return tim2_configure_sample_rate(rate_hz);
+}
+
+uint32_t Capture_GetSampleRate(void)
+{
+    return configured_rate_hz;
+}
 
 void Capture_Samples(void)
 {
-    for (uint32_t i = 0; i < SAMPLE_COUNT; i++)
+    sampleCount = 0U;
+    captureComplete = 0;
+
+    for (uint32_t i = 0U; i < SAMPLE_COUNT; i++)
     {
         sampleBuffer[i] = ADC_Read();
     }
 
     sampleCount = SAMPLE_COUNT;
+    captureComplete = 1;
 }
 
 void DMA_Init(void)
 {
-    RCC->AHB1ENR |= RCC_AHB1ENR_DMA1EN;
-    RCC->AHB1ENR |= RCC_AHB1ENR_DMAMUX1EN;
+    if (capture_initialized != 0U)
+    {
+        return;
+    }
 
-    DMA1_Channel1->CCR = 0;
-    /* Route ADC1 requests to DMA1 Channel1 */    
-    DMAMUX1_Channel0->CCR = 5;
-    captureComplete = DMAMUX1_Channel0->CCR;
+    ADC_Init();
+    __HAL_RCC_DMA2_CLK_ENABLE();
+
+    dma2_stream0_disable();
+    dma2_stream0_clear_flags();
+
+    DMA2_Stream0->CR = 0U;
+    DMA2_Stream0->NDTR = 0U;
+    DMA2_Stream0->PAR = (uint32_t)&ADC1->DR;
+    DMA2_Stream0->M0AR = (uint32_t)sampleBuffer;
+    DMA2_Stream0->FCR = 0U;
+
+    /*
+     * CHSEL = 000: channel 0
+     * DIR   = 00: peripheral to memory
+     * PSIZE = 01: 16-bit peripheral data
+     * MSIZE = 01: 16-bit memory data
+     * MINC  = 1 : increment sampleBuffer address
+     */
+    DMA2_Stream0->CR = DMA_SxCR_PL_1 |
+                       DMA_SxCR_MSIZE_0 |
+                       DMA_SxCR_PSIZE_0 |
+                       DMA_SxCR_MINC |
+                       DMA_SxCR_TCIE |
+                       DMA_SxCR_TEIE |
+                       DMA_SxCR_DMEIE;
+
+    HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5U, 0U);
+    HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+    dwt_cycle_counter_init();
+
+    if (!tim2_configure_sample_rate(CAPTURE_DEFAULT_RATE_HZ))
+    {
+        captureComplete = -1;
+        return;
+    }
+
+    captureComplete = 1;
+    capture_initialized = 1U;
 }
 
 void DMA_CaptureSamples(void)
 {
+    DMA_Init();
+
+    if (capture_initialized == 0U)
+    {
+        captureComplete = -1;
+        return;
+    }
+
+    tim2_stop();
+    ADC_DisableDMA();
+    ADC_UseSoftwareTrigger();
+    dma2_stream0_disable();
+    dma2_stream0_clear_flags();
+
     captureComplete = 0;
-    
-    DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+    sampleCount = 0U;
+    dmaCaptureCycles = 0U;
+    sampleRate = configured_rate_hz;
 
-    DMA1_Channel1->CPAR =
-        (uint32_t)&ADC1->DR;
+    /* Clear stale ADC status, including a possible overrun. */
+    ADC1->SR = 0U;
 
-    DMA1_Channel1->CMAR =
-        (uint32_t)sampleBuffer;
+    DMA2_Stream0->PAR = (uint32_t)&ADC1->DR;
+    DMA2_Stream0->M0AR = (uint32_t)sampleBuffer;
+    DMA2_Stream0->NDTR = SAMPLE_COUNT;
 
-    DMA1_Channel1->CNDTR =
-        SAMPLE_COUNT;
+    ADC_UseTimer2Trigger();
+    ADC_EnableDMA();
 
-    DMA1_Channel1->CCR =
-        DMA_CCR_MINC    |
-        DMA_CCR_PSIZE_0 |
-        DMA_CCR_MSIZE_0 |
-        DMA_CCR_TCIE;
-    
-    /* Clear any old transfer-complete flag */
-    DMA1->IFCR = DMA_IFCR_CTCIF1;
+    capture_start_cycles = DWT->CYCCNT;
 
-    DMA1_Channel1->CCR |= DMA_CCR_EN;    // Enable
+    DMA2_Stream0->CR |= DMA_SxCR_EN;
 
-      /* Start ADC conversion */
-    ADC1->CR |= ADC_CR_ADSTART;
+    TIM2->CNT = 0U;
+    TIM2->SR = 0U;
+    TIM2->CR1 |= TIM_CR1_CEN;
 }
 
-void DMA1_Channel1_IRQHandler(void)
+void DMA2_Stream0_IRQHandler(void)
 {
-    DMA1->IFCR = DMA_IFCR_CTCIF1;
+    uint32_t status = DMA2->LISR;
 
-    sampleCount = SAMPLE_COUNT;
+    if ((status & DMA_LISR_TCIF0) != 0U)
+    {
+        uint32_t stop_cycles = DWT->CYCCNT;
 
-    captureComplete = 1;
+        tim2_stop();
+        dma2_stream0_clear_flags();
+        dma2_stream0_disable();
+        ADC_DisableDMA();
+        ADC_UseSoftwareTrigger();
+
+        dmaCaptureCycles = stop_cycles - capture_start_cycles;
+        sampleCount = SAMPLE_COUNT;
+        sampleRate = configured_rate_hz;
+        captureComplete = 1;
+
+        return;
+    }
+
+    if ((status & (DMA_LISR_TEIF0 |
+                   DMA_LISR_DMEIF0 |
+                   DMA_LISR_FEIF0)) != 0U)
+    {
+        tim2_stop();
+        dma2_stream0_clear_flags();
+        dma2_stream0_disable();
+        ADC_DisableDMA();
+        ADC_UseSoftwareTrigger();
+
+        sampleCount = 0U;
+        dmaCaptureCycles = 0U;
+        captureComplete = -1;
+    }
 }
