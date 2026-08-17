@@ -47,9 +47,9 @@
 #define LCD_WIDTH               240U
 #define LCD_HEIGHT              320U
 
-#define LCD_HSYNC               10U
-#define LCD_HBP                 20U
-#define LCD_HFP                 10U
+#define LCD_HSYNC               9U
+#define LCD_HBP                 29U
+#define LCD_HFP                 2U
 #define LCD_VSYNC               2U
 #define LCD_VBP                 2U
 #define LCD_VFP                 4U

@@ -18,13 +18,16 @@ void Display_DrawPixel(int32_t x,
 {
     int32_t physical_x;
     int32_t physical_y;
+    uint32_t pixel_index;
 
     if (display_framebuffer == NULL)
     {
         return;
     }
 
-    /* Check logical 320 x 240 landscape coordinates. */
+    /*
+     * Validate logical 320 x 240 landscape coordinates.
+     */
     if ((x < 0) ||
         (y < 0) ||
         (x >= (int32_t)DISPLAY_WIDTH) ||
@@ -34,19 +37,18 @@ void Display_DrawPixel(int32_t x,
     }
 
     /*
-     * Rotate logical coordinates 90 degrees clockwise into the
-     * physical 240 x 320 framebuffer.
+     * Map logical landscape coordinates into the physical
+     * 240 x 320 framebuffer.
      */
-    physical_x =
-        (int32_t)FRAMEBUFFER_PHYSICAL_WIDTH - 1 - y;
-
+    physical_x = y;
     physical_y = x;
 
-    display_framebuffer[
+    pixel_index =
         ((uint32_t)physical_y *
          FRAMEBUFFER_PHYSICAL_WIDTH) +
-        (uint32_t)physical_x
-    ] = color;
+        (uint32_t)physical_x;
+
+    display_framebuffer[pixel_index] = color;
 }
 void Display_Clear(uint16_t color)
 {

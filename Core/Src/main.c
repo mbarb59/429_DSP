@@ -9,6 +9,8 @@
 #include "capture.h"
 #include "fft.h"
 #include "display.h"
+#include "i2c3.h"
+#include "stmpe811.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -78,17 +80,36 @@ int main(void)
     UART_SendString(" STM32F429 SPECTRUM ANALYZER\r\n");
     UART_SendString("================================\r\n");
 
-    UART_SendString("SDRAM INIT...\r\n");
+   UART_SendString("SDRAM INIT...\r\n");
 
-    if (f429_sdram_init() != HAL_OK || !f429_sdram_test())
-    {
-        UART_SendString("SDRAM FAIL\r\n");
-        Error_Handler();
-    }
+if (f429_sdram_init() != HAL_OK)
+{
+    UART_SendString("SDRAM INIT FAIL\r\n");
+    Error_Handler();
+}
 
-    UART_SendString("SDRAM OK\r\n");
-    UART_SendString("LTDC INIT...\r\n");
+UART_SendString("SDRAM BASIC TEST...\r\n");
 
+if (!f429_sdram_test())
+{
+    UART_SendString("SDRAM BASIC TEST FAIL\r\n");
+    Error_Handler();
+}
+
+UART_SendString("SDRAM BASIC TEST OK\r\n");
+
+UART_SendString("SDRAM STRESS TEST...\r\n");
+
+if (!f429_sdram_stress())
+{
+    UART_SendString("SDRAM STRESS TEST FAIL\r\n");
+    Error_Handler();
+}
+
+UART_SendString("SDRAM STRESS TEST OK\r\n");
+UART_SendString("SDRAM OK\r\n");
+
+UART_SendString("LTDC INIT...\r\n");
     if (f429_ltdc_init() != HAL_OK)
     {
         UART_SendString("LTDC FAIL\r\n");
@@ -289,6 +310,228 @@ static void Console_ProcessCommand(char *command)
         Display_Clear(COLOR_BLACK);
         UART_SendString("Display cleared\r\n");
     }
+    else if (strcmp(command, "i2c") == 0)
+    {
+    UART_SendString("Testing I2C3...\r\n");
+
+    if (I2C3_Init() != HAL_OK)
+    {
+        UART_SendString("I2C3 initialization failed\r\n");
+    }
+    else if (I2C3_IsReady(0x41U))
+    {
+        UART_SendString("STMPE811 detected at address 0x41\r\n");
+    }
+    else
+    {
+        UART_SendString("STMPE811 not detected\r\n");
+    }
+  } else if (strcmp(command, "touchinit") == 0)
+    {
+    uint16_t chip_id = 0U;
+
+    UART_SendString("Initializing STMPE811...\r\n");
+    
+    if (STMPE811_Init() != HAL_OK)
+    {
+        UART_SendString("STMPE811 initialization failed\r\n");
+    }
+    else if (STMPE811_ReadChipId(&chip_id) != HAL_OK)
+    {
+        UART_SendString("STMPE811 chip ID read failed\r\n");
+    }
+    else
+    {
+        UART_SendString("STMPE811 initialization OK\r\n");
+
+        UART_SendString("Chip ID = ");
+        UART_SendHex32((uint32_t)chip_id);
+        UART_SendString("\r\n");
+
+        if (chip_id == STMPE811_EXPECTED_ID)
+        {
+            UART_SendString("Chip ID verified\r\n");
+        }
+        else
+        {
+            UART_SendString("Unexpected chip ID\r\n");
+        }
+    }
+}
+      else if (strcmp(command, "touchraw") == 0)
+{
+    STMPE811_TouchData touch = {0};
+
+    if (!STMPE811_IsInitialized())
+    {
+        UART_SendString("Touch controller is not initialized\r\n");
+        UART_SendString("Run touchinit first\r\n");
+    }
+    else if (STMPE811_ReadRaw(&touch) != HAL_OK)
+    {
+        UART_SendString("Touch read failed\r\n");
+    }
+    else if (!touch.pressed)
+    {
+        UART_SendString("No touch detected\r\n");
+    }
+    else
+    {
+        UART_SendString("Touch detected\r\n");
+
+        UART_SendString("Raw X = ");
+        UART_SendDec((uint32_t)touch.raw_x);
+        UART_SendString("\r\n");
+
+        UART_SendString("Raw Y = ");
+        UART_SendDec((uint32_t)touch.raw_y);
+        UART_SendString("\r\n");
+
+        UART_SendString("Pressure = ");
+        UART_SendDec((uint32_t)touch.pressure);
+        UART_SendString("\r\n");
+    }
+}     else if (strcmp(command, "corners") == 0)
+{
+    Display_Clear(COLOR_BLACK);
+
+    /* Top-left: red. */
+    Display_FillRect(
+        0,  0,
+        30,
+        30,
+        COLOR_RED);
+
+    /* Top-right: green. */
+    Display_FillRect(
+        DISPLAY_WIDTH - 30,
+        0,
+        30,
+        30,
+        COLOR_GREEN);
+
+    /* Bottom-left: blue. */
+    Display_FillRect(
+        0, DISPLAY_HEIGHT - 30,
+        30,
+        30,
+        COLOR_BLUE);
+
+    /* Bottom-right: yellow. */
+    Display_FillRect(
+        DISPLAY_WIDTH - 30,
+        DISPLAY_HEIGHT - 30,
+        30,
+        30,
+        COLOR_YELLOW);
+
+    UART_SendString("Corner markers drawn\r\n");
+    UART_SendString("Top-left = red\r\n");
+    UART_SendString("Top-right = green\r\n");
+    UART_SendString("Bottom-left = blue\r\n");
+    UART_SendString("Bottom-right = yellow\r\n");
+}
+else if (strcmp(command, "gridtest") == 0)
+{
+    Display_Clear(COLOR_BLACK);
+
+    /* Draw a white border around the logical 320 x 240 screen. */
+    Display_DrawRect(
+        0,
+        0,
+        DISPLAY_WIDTH,
+        DISPLAY_HEIGHT,
+        COLOR_WHITE);
+
+    /* Draw vertical grid lines every 40 pixels. */
+    for (int32_t x = 40;
+         x < (int32_t)DISPLAY_WIDTH;
+         x += 40)
+    {
+        Display_DrawLine(
+            x,
+            0,
+            x,
+            (int32_t)DISPLAY_HEIGHT - 1,
+            COLOR_DARK_GRAY);
+    }
+
+    /* Draw horizontal grid lines every 40 pixels. */
+    for (int32_t y = 40;
+         y < (int32_t)DISPLAY_HEIGHT;
+         y += 40)
+    {
+        Display_DrawLine(
+            0,
+            y,
+            (int32_t)DISPLAY_WIDTH - 1,
+            y,
+            COLOR_DARK_GRAY);
+    }
+
+    /* Top-left marker. */
+    Display_FillRect(
+        0,
+        0,
+        20,
+        20,
+        COLOR_RED);
+
+    /* Top-right marker. */
+    Display_FillRect(
+        (int32_t)DISPLAY_WIDTH - 20,
+        0,
+        20,
+        20,
+        COLOR_GREEN);
+
+    /* Bottom-left marker. */
+    Display_FillRect(
+        0,
+        (int32_t)DISPLAY_HEIGHT - 20,
+        20,
+        20,
+        COLOR_BLUE);
+
+    /* Bottom-right marker. */
+    Display_FillRect(
+        (int32_t)DISPLAY_WIDTH - 20,
+        (int32_t)DISPLAY_HEIGHT - 20,
+        20,
+        20,
+        COLOR_YELLOW);
+
+    UART_SendString("Display grid drawn\r\n");
+}
+    else if (strcmp(command, "ltdcstat") == 0)
+{
+    uint32_t status = LTDC->ISR;
+
+    UART_SendString("LTDC_ISR=");
+    UART_SendHex32(status);
+    UART_SendString("\r\n");
+
+    if ((status & LTDC_ISR_FUIF) != 0U)
+    {
+        UART_SendString("FIFO UNDERRUN\r\n");
+    }
+    else
+    {
+        UART_SendString("FIFO OK\r\n");
+    }
+
+    if ((status & LTDC_ISR_TERRIF) != 0U)
+    {
+        UART_SendString("TRANSFER ERROR\r\n");
+    }
+    else
+    {
+        UART_SendString("TRANSFER OK\r\n");
+    }
+
+    LTDC->ICR = LTDC_ICR_CFUIF |
+                LTDC_ICR_CTERRIF;
+}
     else if (command[0] != '\0')
     {
         UART_SendString("Unknown command\r\n");
@@ -313,7 +556,13 @@ static void Console_PrintHelp(void)
         "fft         - Process current sample buffer\r\n"
         "magdump     - Dump FFT bins 0 through 15\r\n"
         "bars        - Draw RGB test bars\r\n"
-        "clear       - Clear the display\r\n");
+        "clear       - Clear the display\r\n"
+        "i2c         - Test STMPE811 I2C connection\r\n"
+        "touchinit   - Initialize STMPE811 and verify ID\r\n"
+        "touchraw    - Read one raw touch sample\r\n"
+        "corners     - Draw touch calibration corners\r\n"
+	"ltdcstat    - Check LTDC error flags\r\n"
+        "gridtest    - Draw display geometry test\r\n");
 }
 
 static void Console_PrintStatus(void)

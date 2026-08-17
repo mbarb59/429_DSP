@@ -163,7 +163,7 @@ HAL_StatusTypeDef f429_sdram_init(void)
 
     hsdram.Instance = FMC_SDRAM_DEVICE;
     hsdram.Init.SDBank = FMC_SDRAM_BANK2;
-    hsdram.Init.ColumnBitsNumber = FMC_SDRAM_COLUMN_BITS_NUM_9;
+    hsdram.Init.ColumnBitsNumber = FMC_SDRAM_COLUMN_BITS_NUM_8;
     hsdram.Init.RowBitsNumber = FMC_SDRAM_ROW_BITS_NUM_12;
     hsdram.Init.MemoryDataWidth = FMC_SDRAM_MEM_BUS_WIDTH_16;
     hsdram.Init.InternalBankNumber = FMC_SDRAM_INTERN_BANKS_NUM_4;
