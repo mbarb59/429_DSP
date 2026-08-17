@@ -1,123 +1,141 @@
-// LCD bring-up + LTDC Layer 0 support for STM32F429DISC / STM32F429I-DISC1
+/*
+ * ILI9341 control and LTDC Layer 0 support for STM32F429I-DISC1.
+ *
+ * SPI5 is used to configure the ILI9341 controller.
+ * LTDC continuously streams RGB565 pixel data from external SDRAM.
+ */
 
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_hal_ltdc.h"
 #include "ltdc_ili9341.h"
-#include "uart.h"
 
-#include <stdint.h>
 #include <stddef.h>
-//#include <stdio.h>
-
-
-//#include "py/misc.h"
-//#include "py/obj.h"
-
-#ifndef LCD_DBG
-#define LCD_DBG(...)
-#endif
-
-#define LCD_MARK(msg) UART_SendString(msg "\r\n")
+#include <stdint.h>
 
 #ifndef ILI9341_MADCTL
-#define ILI9341_MADCTL (0x48)
+#define ILI9341_MADCTL 0x48U
 #endif
 
 #ifndef LCD_DE_ACTIVE_HIGH
-#define LCD_DE_ACTIVE_HIGH (0)
+#define LCD_DE_ACTIVE_HIGH 0
 #endif
 
-#define LCD_SPIx                SPI5
-#define LCD_SPIx_CLK_ENABLE()   __HAL_RCC_SPI5_CLK_ENABLE()
+#define LCD_SPI                 SPI5
+#define LCD_SPI_CLK_ENABLE()    __HAL_RCC_SPI5_CLK_ENABLE()
 
-#define LCD_SPI_SCK_GPIO_PORT   GPIOF
+#define LCD_SPI_SCK_PORT        GPIOF
 #define LCD_SPI_SCK_PIN         GPIO_PIN_7
 #define LCD_SPI_SCK_AF          GPIO_AF5_SPI5
 
-#define LCD_SPI_MISO_GPIO_PORT  GPIOF
+#define LCD_SPI_MISO_PORT       GPIOF
 #define LCD_SPI_MISO_PIN        GPIO_PIN_8
 #define LCD_SPI_MISO_AF         GPIO_AF5_SPI5
 
-#define LCD_SPI_MOSI_GPIO_PORT  GPIOF
+#define LCD_SPI_MOSI_PORT       GPIOF
 #define LCD_SPI_MOSI_PIN        GPIO_PIN_9
 #define LCD_SPI_MOSI_AF         GPIO_AF5_SPI5
 
-#define LCD_CS_GPIO_PORT        GPIOC
+#define LCD_CS_PORT             GPIOC
 #define LCD_CS_PIN              GPIO_PIN_2
 
-#define LCD_DC_GPIO_PORT        GPIOD
+#define LCD_DC_PORT             GPIOD
 #define LCD_DC_PIN              GPIO_PIN_13
 
-#define LCD_RST_GPIO_PORT       GPIOA
-#define LCD_RST_PIN             GPIO_PIN_1
+#define LCD_RESET_PORT          GPIOA
+#define LCD_RESET_PIN           GPIO_PIN_1
 
-#define LCD_BL_GPIO_PORT        GPIOA
-#define LCD_BL_PIN              GPIO_PIN_8
+#define LCD_BACKLIGHT_PORT      GPIOA
+#define LCD_BACKLIGHT_PIN       GPIO_PIN_8
 
-#define LCD_WIDTH   (240)
-#define LCD_HEIGHT  (320)
+#define LCD_WIDTH               240U
+#define LCD_HEIGHT              320U
 
-#define HSYNC   (9)
-#define HBP     (29)
-#define HFP     (2)
-#define VSYNC   (2)
-#define VBP     (2)
-#define VFP     (4)
+#define LCD_HSYNC               10U
+#define LCD_HBP                 20U
+#define LCD_HFP                 10U
+#define LCD_VSYNC               2U
+#define LCD_VBP                 2U
+#define LCD_VFP                 4U
 
 static LTDC_HandleTypeDef hltdc;
 static SPI_HandleTypeDef hspi_lcd;
-static uint8_t lcd_inited = 0;
-static uint8_t layer0_configured = 0;
+static uint8_t lcd_initialized;
+static uint8_t layer0_configured;
 
-static void gpio_init_output(GPIO_TypeDef *port, uint16_t pin) {
-    GPIO_InitTypeDef gi = {0};
-    gi.Pin = pin;
-    gi.Mode = GPIO_MODE_OUTPUT_PP;
-    gi.Pull = GPIO_NOPULL;
-    gi.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(port, &gi);
+static void gpio_init_output(GPIO_TypeDef *port, uint16_t pin)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Pin = pin;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+
+    HAL_GPIO_Init(port, &gpio);
 }
 
-static void gpio_init_af(GPIO_TypeDef *port, uint16_t pin, uint32_t af) {
-    GPIO_InitTypeDef gi = {0};
-    gi.Pin = pin;
-    gi.Mode = GPIO_MODE_AF_PP;
-    gi.Pull = GPIO_NOPULL;
-    gi.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gi.Alternate = af;
-    HAL_GPIO_Init(port, &gi);
+static void gpio_init_af(GPIO_TypeDef *port,
+                         uint16_t pin,
+                         uint32_t alternate)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    gpio.Pin = pin;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = alternate;
+
+    HAL_GPIO_Init(port, &gpio);
 }
 
-static inline void gpio_out(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState v) {
-    HAL_GPIO_WritePin(port, pin, v);
+static void gpio_write(GPIO_TypeDef *port,
+                       uint16_t pin,
+                       GPIO_PinState state)
+{
+    HAL_GPIO_WritePin(port, pin, state);
 }
 
-HAL_StatusTypeDef ili9341_init_spi(void) {
+static HAL_StatusTypeDef ili9341_write(uint8_t command,
+                                       const uint8_t *data,
+                                       size_t length)
+{
+    if (ili9341_send_cmd(command) != HAL_OK)
+    {
+        return HAL_ERROR;
+    }
+
+    if ((length > 0U) && (ili9341_send_data(data, length) != HAL_OK))
+    {
+        return HAL_ERROR;
+    }
+
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef ili9341_init_spi(void)
+{
     __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_GPIOE_CLK_ENABLE();
     __HAL_RCC_GPIOF_CLK_ENABLE();
-    __HAL_RCC_GPIOG_CLK_ENABLE();
+    LCD_SPI_CLK_ENABLE();
 
-    LCD_SPIx_CLK_ENABLE();
+    gpio_init_af(LCD_SPI_SCK_PORT, LCD_SPI_SCK_PIN, LCD_SPI_SCK_AF);
+    gpio_init_af(LCD_SPI_MISO_PORT, LCD_SPI_MISO_PIN, LCD_SPI_MISO_AF);
+    gpio_init_af(LCD_SPI_MOSI_PORT, LCD_SPI_MOSI_PIN, LCD_SPI_MOSI_AF);
 
-    gpio_init_af(LCD_SPI_SCK_GPIO_PORT, LCD_SPI_SCK_PIN, LCD_SPI_SCK_AF);
-    gpio_init_af(LCD_SPI_MISO_GPIO_PORT, LCD_SPI_MISO_PIN, LCD_SPI_MISO_AF);
-    gpio_init_af(LCD_SPI_MOSI_GPIO_PORT, LCD_SPI_MOSI_PIN, LCD_SPI_MOSI_AF);
+    gpio_init_output(LCD_CS_PORT, LCD_CS_PIN);
+    gpio_init_output(LCD_DC_PORT, LCD_DC_PIN);
+    gpio_init_output(LCD_RESET_PORT, LCD_RESET_PIN);
+    gpio_init_output(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN);
 
-    gpio_init_output(LCD_CS_GPIO_PORT, LCD_CS_PIN);
-    gpio_init_output(LCD_DC_GPIO_PORT, LCD_DC_PIN);
-    gpio_init_output(LCD_RST_GPIO_PORT, LCD_RST_PIN);
-    gpio_init_output(LCD_BL_GPIO_PORT, LCD_BL_PIN);
+    gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_SET);
+    gpio_write(LCD_DC_PORT, LCD_DC_PIN, GPIO_PIN_SET);
+    gpio_write(LCD_RESET_PORT, LCD_RESET_PIN, GPIO_PIN_SET);
+    gpio_write(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN, GPIO_PIN_RESET);
 
-    gpio_out(LCD_CS_GPIO_PORT, LCD_CS_PIN, GPIO_PIN_SET);
-    gpio_out(LCD_DC_GPIO_PORT, LCD_DC_PIN, GPIO_PIN_SET);
-    gpio_out(LCD_RST_GPIO_PORT, LCD_RST_PIN, GPIO_PIN_SET);
-    gpio_out(LCD_BL_GPIO_PORT, LCD_BL_PIN, GPIO_PIN_RESET);
-
-    hspi_lcd.Instance = LCD_SPIx;
+    hspi_lcd.Instance = LCD_SPI;
     hspi_lcd.Init.Mode = SPI_MODE_MASTER;
     hspi_lcd.Init.Direction = SPI_DIRECTION_1LINE;
     hspi_lcd.Init.DataSize = SPI_DATASIZE_8BIT;
@@ -128,243 +146,153 @@ HAL_StatusTypeDef ili9341_init_spi(void) {
     hspi_lcd.Init.FirstBit = SPI_FIRSTBIT_MSB;
     hspi_lcd.Init.TIMode = SPI_TIMODE_DISABLE;
     hspi_lcd.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-    hspi_lcd.Init.CRCPolynomial = 7;
+    hspi_lcd.Init.CRCPolynomial = 7U;
 
-    if (HAL_SPI_Init(&hspi_lcd) != HAL_OK) {
-        LCD_DBG("SPI5 init failed\n");
-        return HAL_ERROR;
-    }
+    return HAL_SPI_Init(&hspi_lcd);
+}
+
+HAL_StatusTypeDef ili9341_hw_reset(void)
+{
+    gpio_write(LCD_RESET_PORT, LCD_RESET_PIN, GPIO_PIN_RESET);
+    HAL_Delay(20U);
+
+    gpio_write(LCD_RESET_PORT, LCD_RESET_PIN, GPIO_PIN_SET);
+    HAL_Delay(120U);
 
     return HAL_OK;
 }
 
-HAL_StatusTypeDef ili9341_hw_reset(void) {
-    gpio_out(LCD_RST_GPIO_PORT, LCD_RST_PIN, GPIO_PIN_RESET);
-    HAL_Delay(20);
-    gpio_out(LCD_RST_GPIO_PORT, LCD_RST_PIN, GPIO_PIN_SET);
-    HAL_Delay(120);
-    return HAL_OK;
+HAL_StatusTypeDef ili9341_send_cmd(uint8_t command)
+{
+    HAL_StatusTypeDef status;
+
+    gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_RESET);
+    gpio_write(LCD_DC_PORT, LCD_DC_PIN, GPIO_PIN_RESET);
+
+    status = HAL_SPI_Transmit(&hspi_lcd, &command, 1U, 20U);
+
+    gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_SET);
+
+    return status;
 }
 
-HAL_StatusTypeDef ili9341_send_cmd(uint8_t cmd) {
-    gpio_out(LCD_CS_GPIO_PORT, LCD_CS_PIN, GPIO_PIN_RESET);
-    gpio_out(LCD_DC_GPIO_PORT, LCD_DC_PIN, GPIO_PIN_RESET);
+HAL_StatusTypeDef ili9341_send_data(const uint8_t *data, size_t length)
+{
+    HAL_StatusTypeDef status;
 
-    HAL_StatusTypeDef st = HAL_SPI_Transmit(&hspi_lcd, &cmd, 1, 20);
-
-    gpio_out(LCD_CS_GPIO_PORT, LCD_CS_PIN, GPIO_PIN_SET);
-    return st;
-}
-
-HAL_StatusTypeDef ili9341_send_data(const uint8_t *data, size_t len) {
-    if (len == 0) {
+    if (length == 0U)
+    {
         return HAL_OK;
     }
 
-    gpio_out(LCD_CS_GPIO_PORT, LCD_CS_PIN, GPIO_PIN_RESET);
-    gpio_out(LCD_DC_GPIO_PORT, LCD_DC_PIN, GPIO_PIN_SET);
+    if (data == NULL)
+    {
+        return HAL_ERROR;
+    }
 
-    HAL_StatusTypeDef st = HAL_SPI_Transmit(&hspi_lcd, (uint8_t *)data, len, 100);
+    gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_RESET);
+    gpio_write(LCD_DC_PORT, LCD_DC_PIN, GPIO_PIN_SET);
 
-    gpio_out(LCD_CS_GPIO_PORT, LCD_CS_PIN, GPIO_PIN_SET);
-    return st;
+    status = HAL_SPI_Transmit(&hspi_lcd,
+                              (uint8_t *)data,
+                              (uint16_t)length,
+                              100U);
+
+    gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_SET);
+
+    return status;
 }
 
 HAL_StatusTypeDef ili9341_init_sequence(void)
 {
-    if (ili9341_send_cmd(0x01) != HAL_OK)
+    static const uint8_t rgb_interface[] = {0xC2U};
+    static const uint8_t pixel_format[] = {0x55U};
+    static const uint8_t memory_access[] = {ILI9341_MADCTL};
+    static const uint8_t porch_control[] =
+        {0x0CU, 0x0CU, 0x00U, 0x33U, 0x33U};
+    static const uint8_t power_control_1[] = {0x23U};
+    static const uint8_t power_control_2[] = {0x10U};
+    static const uint8_t vcom_control_1[] = {0x3EU, 0x28U};
+    static const uint8_t vcom_control_2[] = {0x86U};
+    static const uint8_t display_function[] =
+        {0x0AU, 0xA2U, 0x27U, 0x04U};
+    static const uint8_t interface_control[] = {0x00U, 0x00U, 0x06U};
+    static const uint8_t frame_rate[] = {0x00U, 0x18U};
+
+    if (ili9341_write(0x01U, NULL, 0U) != HAL_OK)
     {
         return HAL_ERROR;
     }
-    HAL_Delay(5);
+    HAL_Delay(5U);
 
-    if (ili9341_send_cmd(0x11) != HAL_OK)
+    if (ili9341_write(0x11U, NULL, 0U) != HAL_OK)
     {
         return HAL_ERROR;
     }
-    HAL_Delay(120);
+    HAL_Delay(120U);
 
-    if (ili9341_send_cmd(0xB0) != HAL_OK)
+    if (ili9341_write(0xB0U, rgb_interface, sizeof(rgb_interface)) != HAL_OK ||
+        ili9341_write(0x3AU, pixel_format, sizeof(pixel_format)) != HAL_OK ||
+        ili9341_write(0x36U, memory_access, sizeof(memory_access)) != HAL_OK ||
+        ili9341_write(0xB2U, porch_control, sizeof(porch_control)) != HAL_OK ||
+        ili9341_write(0xC0U, power_control_1, sizeof(power_control_1)) != HAL_OK ||
+        ili9341_write(0xC1U, power_control_2, sizeof(power_control_2)) != HAL_OK ||
+        ili9341_write(0xC5U, vcom_control_1, sizeof(vcom_control_1)) != HAL_OK ||
+        ili9341_write(0xC7U, vcom_control_2, sizeof(vcom_control_2)) != HAL_OK ||
+        ili9341_write(0xB6U, display_function, sizeof(display_function)) != HAL_OK ||
+        ili9341_write(0xF6U, interface_control, sizeof(interface_control)) != HAL_OK ||
+        ili9341_write(0xB1U, frame_rate, sizeof(frame_rate)) != HAL_OK)
     {
         return HAL_ERROR;
     }
-    {
-        uint8_t d = 0xC2;
-        if (ili9341_send_data(&d, 1) != HAL_OK)
-        {
-            return HAL_ERROR;
-        }
-    }
 
-    if (ili9341_send_cmd(0x3A) != HAL_OK)
+    if (ili9341_write(0x29U, NULL, 0U) != HAL_OK)
     {
         return HAL_ERROR;
     }
-    {
-        uint8_t d = 0x55;
-        if (ili9341_send_data(&d, 1) != HAL_OK)
-        {
-            return HAL_ERROR;
-        }
-    }
+    HAL_Delay(20U);
 
-    if (ili9341_send_cmd(0x36) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    {
-        uint8_t d = ILI9341_MADCTL;
-        if (ili9341_send_data(&d, 1) != HAL_OK)
-        {
-            return HAL_ERROR;
-        }
-    }
+    gpio_write(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN, GPIO_PIN_SET);
+    HAL_Delay(10U);
 
-    if (ili9341_send_cmd(0xB2) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    {
-        uint8_t d[5] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
-        if (ili9341_send_data(d, 5) != HAL_OK)
-        {
-            return HAL_ERROR;
-        }
-    }
-
-if (ili9341_send_cmd(0xC0) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d = 0x23;
-    if (ili9341_send_data(&d, 1) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-
-if (ili9341_send_cmd(0xC1) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d = 0x10;
-    if (ili9341_send_data(&d, 1) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-if (ili9341_send_cmd(0xC5) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-if (ili9341_send_cmd(0xC7) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d = 0x86;
-
-    if (ili9341_send_data(&d, 1) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-{
-    uint8_t d[2] = {0x3E, 0x28};
-    if (ili9341_send_data(d, 2) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-}
-
-if (ili9341_send_cmd(0xB6) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d[4] = {0x0A, 0xA2, 0x27, 0x04};
-    if (ili9341_send_data(d, 4) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-
-if (ili9341_send_cmd(0xF6) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d[3] = {0x00, 0x00, 0x06};
-    if (ili9341_send_data(d, 3) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-
-if (ili9341_send_cmd(0xB1) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-{
-    uint8_t d[2] = {0x00, 0x18};
-    if (ili9341_send_data(d, 2) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-}
-
-if (ili9341_send_cmd(0x29) != HAL_OK)
-{
-    return HAL_ERROR;
-}
-
-HAL_Delay(20);
-
-gpio_out(LCD_BL_GPIO_PORT, LCD_BL_PIN, GPIO_PIN_SET);
-HAL_Delay(10);
-
-return HAL_OK;
+    return HAL_OK;
 }
 
 static HAL_StatusTypeDef ltdc_clock_init(void)
 {
-    RCC_PeriphCLKInitTypeDef p = {0};
+    RCC_PeriphCLKInitTypeDef clock = {0};
 
-    LCD_MARK("CLK A");
+    clock.PeriphClockSelection = RCC_PERIPHCLK_LTDC;
+    clock.PLLSAI.PLLSAIN = 192U;
+    clock.PLLSAI.PLLSAIR = 4U;
+    clock.PLLSAIDivR = RCC_PLLSAIDIVR_8;
 
-    p.PeriphClockSelection = RCC_PERIPHCLK_LTDC;
-    p.PLLSAI.PLLSAIN = 192;
-    p.PLLSAI.PLLSAIR = 4;
-    p.PLLSAIDivR = RCC_PLLSAIDIVR_8;
-
-    if (HAL_RCCEx_PeriphCLKConfig(&p) != HAL_OK)
+    if (HAL_RCCEx_PeriphCLKConfig(&clock) != HAL_OK)
     {
-        LCD_MARK("CLK FAIL");
         return HAL_ERROR;
     }
 
     __HAL_RCC_LTDC_CLK_ENABLE();
 
-    LCD_MARK("CLK OK");
-
     return HAL_OK;
 }
-static void ltdc_pins_init(void) {
+
+static void ltdc_pins_init(void)
+{
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_GPIOE_CLK_ENABLE();
     __HAL_RCC_GPIOF_CLK_ENABLE();
     __HAL_RCC_GPIOG_CLK_ENABLE();
 
+    /* LTDC clock and synchronization signals. */
     gpio_init_af(GPIOG, GPIO_PIN_7, GPIO_AF14_LTDC);
     gpio_init_af(GPIOC, GPIO_PIN_6, GPIO_AF14_LTDC);
     gpio_init_af(GPIOA, GPIO_PIN_4, GPIO_AF14_LTDC);
     gpio_init_af(GPIOF, GPIO_PIN_10, GPIO_AF14_LTDC);
 
+    /* Red data lines R2 through R7. */
     gpio_init_af(GPIOC, GPIO_PIN_10, GPIO_AF14_LTDC);
     gpio_init_af(GPIOB, GPIO_PIN_0, GPIO_AF9_LTDC);
     gpio_init_af(GPIOA, GPIO_PIN_11, GPIO_AF14_LTDC);
@@ -372,6 +300,7 @@ static void ltdc_pins_init(void) {
     gpio_init_af(GPIOB, GPIO_PIN_1, GPIO_AF9_LTDC);
     gpio_init_af(GPIOG, GPIO_PIN_6, GPIO_AF14_LTDC);
 
+    /* Green data lines G2 through G7. */
     gpio_init_af(GPIOA, GPIO_PIN_6, GPIO_AF14_LTDC);
     gpio_init_af(GPIOG, GPIO_PIN_10, GPIO_AF9_LTDC);
     gpio_init_af(GPIOB, GPIO_PIN_10, GPIO_AF14_LTDC);
@@ -379,6 +308,7 @@ static void ltdc_pins_init(void) {
     gpio_init_af(GPIOC, GPIO_PIN_7, GPIO_AF14_LTDC);
     gpio_init_af(GPIOD, GPIO_PIN_3, GPIO_AF14_LTDC);
 
+    /* Blue data lines B2 through B7. */
     gpio_init_af(GPIOD, GPIO_PIN_6, GPIO_AF14_LTDC);
     gpio_init_af(GPIOG, GPIO_PIN_11, GPIO_AF14_LTDC);
     gpio_init_af(GPIOG, GPIO_PIN_12, GPIO_AF9_LTDC);
@@ -387,120 +317,77 @@ static void ltdc_pins_init(void) {
     gpio_init_af(GPIOB, GPIO_PIN_9, GPIO_AF14_LTDC);
 }
 
-static HAL_StatusTypeDef ltdc_core_init_background_only(void) {
+static HAL_StatusTypeDef ltdc_core_init(void)
+{
     hltdc.Instance = LTDC;
 
     hltdc.Init.HSPolarity = LTDC_HSPOLARITY_AL;
     hltdc.Init.VSPolarity = LTDC_VSPOLARITY_AL;
-
 #if LCD_DE_ACTIVE_HIGH
     hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AH;
 #else
     hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
 #endif
-
     hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IIPC;
 
-    hltdc.Init.HorizontalSync = HSYNC - 1;
-    hltdc.Init.AccumulatedHBP = HSYNC + HBP - 1;
-    hltdc.Init.AccumulatedActiveW = HSYNC + HBP + LCD_WIDTH - 1;
-    hltdc.Init.TotalWidth = HSYNC + HBP + LCD_WIDTH + HFP - 1;
+    hltdc.Init.HorizontalSync = LCD_HSYNC - 1U;
+    hltdc.Init.AccumulatedHBP = LCD_HSYNC + LCD_HBP - 1U;
+    hltdc.Init.AccumulatedActiveW =
+        LCD_HSYNC + LCD_HBP + LCD_WIDTH - 1U;
+    hltdc.Init.TotalWidth =
+        LCD_HSYNC + LCD_HBP + LCD_WIDTH + LCD_HFP - 1U;
 
-    hltdc.Init.VerticalSync = VSYNC - 1;
-    hltdc.Init.AccumulatedVBP = VSYNC + VBP - 1;
-    hltdc.Init.AccumulatedActiveH = VSYNC + VBP + LCD_HEIGHT - 1;
-    hltdc.Init.TotalHeigh = VSYNC + VBP + LCD_HEIGHT + VFP - 1;
+    hltdc.Init.VerticalSync = LCD_VSYNC - 1U;
+    hltdc.Init.AccumulatedVBP = LCD_VSYNC + LCD_VBP - 1U;
+    hltdc.Init.AccumulatedActiveH =
+        LCD_VSYNC + LCD_VBP + LCD_HEIGHT - 1U;
+    hltdc.Init.TotalHeigh =
+        LCD_VSYNC + LCD_VBP + LCD_HEIGHT + LCD_VFP - 1U;
 
-    hltdc.Init.Backcolor.Red = 0;
-    hltdc.Init.Backcolor.Green = 255;
-    hltdc.Init.Backcolor.Blue = 0;
+    hltdc.Init.Backcolor.Red = 0U;
+    hltdc.Init.Backcolor.Green = 0U;
+    hltdc.Init.Backcolor.Blue = 0U;
 
-   LCD_MARK("CORE A");
-
-if (HAL_LTDC_Init(&hltdc) != HAL_OK)
-{
-    LCD_MARK("CORE FAIL");
-    return HAL_ERROR;
-}
-UART_SendString("LTDC_GCR=");
-UART_SendHex32(LTDC->GCR);
-UART_SendString("\r\n");
-
-UART_SendString("LTDC_AWCR=");
-UART_SendHex32(LTDC->AWCR);
-UART_SendString("\r\n");
-
-UART_SendString("LTDC_TWCR=");
-UART_SendHex32(LTDC->TWCR);
-UART_SendString("\r\n");
-LCD_MARK("CORE B");
-
-__HAL_LTDC_RELOAD_CONFIG(&hltdc);
-
-LCD_MARK("CORE C");
-
-return HAL_OK;
+    return HAL_LTDC_Init(&hltdc);
 }
 
-HAL_StatusTypeDef f429_ltdc_layer0_rgb565(uint32_t fb_addr,
+HAL_StatusTypeDef f429_ltdc_layer0_rgb565(uint32_t framebuffer_address,
                                           uint16_t width,
                                           uint16_t height)
 {
     LTDC_LayerCfgTypeDef layer = {0};
 
-    /* Validate the arguments. */
-    if ((fb_addr == 0U) || (width == 0U) || (height == 0U))
+    if ((framebuffer_address == 0U) || (width == 0U) || (height == 0U))
     {
         return HAL_ERROR;
     }
 
-    /* Initialize the LCD and LTDC if needed. */
-    if (!lcd_inited)
+    if (!lcd_initialized && (f429_ltdc_init() != HAL_OK))
     {
-        if (f429_ltdc_init() != HAL_OK)
-        {
-            return HAL_ERROR;
-        }
+        return HAL_ERROR;
     }
 
-    /* Configure the visible Layer 0 window. */
     layer.WindowX0 = 0U;
     layer.WindowX1 = width;
     layer.WindowY0 = 0U;
     layer.WindowY1 = height;
-
-    /* Configure the RGB565 framebuffer. */
     layer.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
-    layer.FBStartAdress = fb_addr;
-    layer.ImageWidth = width;
-    layer.ImageHeight = height;
-
-    /* Make Layer 0 fully opaque. */
+    layer.FBStartAdress = framebuffer_address;
     layer.Alpha = 255U;
     layer.Alpha0 = 0U;
-
-    /* Default layer background color. */
     layer.Backcolor.Red = 0U;
     layer.Backcolor.Green = 0U;
     layer.Backcolor.Blue = 0U;
-
-    /* Configure alpha blending. */
     layer.BlendingFactor1 = LTDC_BLENDING_FACTOR1_PAxCA;
     layer.BlendingFactor2 = LTDC_BLENDING_FACTOR2_PAxCA;
+    layer.ImageWidth = width;
+    layer.ImageHeight = height;
 
-    /* HAL layer 0 corresponds to the LTDC Layer 1 register block. */
     if (HAL_LTDC_ConfigLayer(&hltdc, &layer, 0U) != HAL_OK)
     {
         return HAL_ERROR;
     }
 
-    /* Ensure Layer 0 uses the requested framebuffer address. */
-    if (HAL_LTDC_SetAddress(&hltdc, fb_addr, 0U) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-
-    /* Enable the layer and load the new register values. */
     __HAL_LTDC_LAYER_ENABLE(&hltdc, 0U);
     __HAL_LTDC_RELOAD_CONFIG(&hltdc);
 
@@ -508,6 +395,7 @@ HAL_StatusTypeDef f429_ltdc_layer0_rgb565(uint32_t fb_addr,
 
     return HAL_OK;
 }
+
 HAL_StatusTypeDef f429_ltdc_layer0_enable(int enable)
 {
     if (!layer0_configured)
@@ -515,20 +403,19 @@ HAL_StatusTypeDef f429_ltdc_layer0_enable(int enable)
         return HAL_OK;
     }
 
-    if (enable)
+    if (enable != 0)
     {
-        __HAL_LTDC_LAYER_ENABLE(&hltdc, 0);
+        __HAL_LTDC_LAYER_ENABLE(&hltdc, 0U);
     }
     else
     {
-        __HAL_LTDC_LAYER_DISABLE(&hltdc, 0);
+        __HAL_LTDC_LAYER_DISABLE(&hltdc, 0U);
     }
 
     __HAL_LTDC_RELOAD_CONFIG(&hltdc);
 
     return HAL_OK;
 }
-
 
 uint16_t f429_lcd_width(void)
 {
@@ -539,66 +426,42 @@ uint16_t f429_lcd_height(void)
 {
     return LCD_HEIGHT;
 }
+
 HAL_StatusTypeDef f429_ltdc_init(void)
 {
-    if (lcd_inited)
+    if (lcd_initialized)
     {
-        LCD_MARK("LTDC A0");
         return HAL_OK;
     }
 
-    LCD_MARK("LTDC A");
-
     if (ili9341_init_spi() != HAL_OK)
     {
-        LCD_MARK("LTDC FAIL A");
         return HAL_ERROR;
     }
-
-    LCD_MARK("LTDC B");
 
     if (ili9341_hw_reset() != HAL_OK)
     {
-        LCD_MARK("LTDC FAIL B");
         return HAL_ERROR;
     }
-
-    LCD_MARK("LTDC C");
 
     if (ltdc_clock_init() != HAL_OK)
     {
-        LCD_MARK("LTDC FAIL C");
         return HAL_ERROR;
     }
-
-    LCD_MARK("LTDC D");
 
     ltdc_pins_init();
 
-    LCD_MARK("LTDC E");
-
-    if (ltdc_core_init_background_only() != HAL_OK)
+    if (ltdc_core_init() != HAL_OK)
     {
-        LCD_MARK("LTDC FAIL E");
         return HAL_ERROR;
     }
-
-    LCD_MARK("LTDC F");
 
     if (ili9341_init_sequence() != HAL_OK)
     {
-        LCD_MARK("LTDC FAIL F");
         return HAL_ERROR;
     }
 
-    LCD_MARK("LTDC G");
-
-    lcd_inited = 1;
-
-    LCD_MARK("LTDC DONE");
+    lcd_initialized = 1U;
 
     return HAL_OK;
 }
-
-    
-       

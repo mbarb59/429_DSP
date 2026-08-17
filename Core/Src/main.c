@@ -7,6 +7,8 @@
 #include "ltdc_ili9341.h"
 #include "adc.h"
 #include "capture.h"
+#include "fft.h"
+#include "display.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -16,6 +18,11 @@
 #define FRAMEBUFFER_ADDR       0xD0000000U
 #define COMMAND_BUFFER_SIZE    64U
 #define DMA_TIMEOUT_MS         1000U
+
+#define SPECTRUM_TOP           20
+#define SPECTRUM_BOTTOM        220
+#define SPECTRUM_HEIGHT        (SPECTRUM_BOTTOM - SPECTRUM_TOP)
+#define SPECTRUM_MAX_MAG       1600U
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
@@ -27,6 +34,9 @@ static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
 static void Console_RunDmaCapture(void);
 static void Console_DumpSamples(uint32_t count);
+static int32_t Spectrum_BinToX(uint32_t bin);
+static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
+static void Spectrum_Draw(void);
 
 static volatile uint16_t *const framebuffer =
     (volatile uint16_t *)FRAMEBUFFER_ADDR;
@@ -95,6 +105,8 @@ int main(void)
         UART_SendString("LAYER FAIL\r\n");
         Error_Handler();
     }
+
+    Display_Init(FRAMEBUFFER_ADDR);
 
     UART_SendString("DISPLAY OK\r\n");
 
@@ -191,6 +203,82 @@ static void Console_ProcessCommand(char *command)
     {
         Console_DumpSamples(16U);
     }
+    else if (strcmp(command, "signal") == 0)
+    {
+        if (FFT_GenerateSine(1500U, 1500U, 2048U))
+        {
+            UART_SendString("Synthetic signal generated\r\n");
+            UART_SendString("Frequency = 1500 Hz\r\n");
+            UART_SendString("Samples = 256\r\n");
+        }
+        else
+        {
+            UART_SendString("Signal generation failed\r\n");
+        }
+    }
+    else if (strcmp(command, "fft") == 0)
+    {
+        if (!FFT_Process())
+        {
+            UART_SendString("FFT failed\r\n");
+            UART_SendString("Run signal or capturedma first\r\n");
+        }
+        else
+        {
+            uint32_t bin_width_millihz = FFT_GetBinWidthMilliHz();
+            uint32_t peak_bin = FFT_GetPeakBin();
+
+            UART_SendString("FFT complete\r\n");
+            UART_SendString("FFT size = ");
+            UART_SendDec(FFT_SIZE);
+            UART_SendString("\r\n");
+            UART_SendString("Sample rate = ");
+            UART_SendDec(FFT_GetSampleRate());
+            UART_SendString(" SPS\r\n");
+            UART_SendString("Bin width = ");
+            UART_SendDec(bin_width_millihz / 1000U);
+            UART_SendChar('.');
+            UART_SendDec(bin_width_millihz % 1000U);
+            UART_SendString(" Hz\r\n");
+            UART_SendString("DC level = ");
+            UART_SendDec(FFT_GetDC());
+            UART_SendString("\r\n");
+            UART_SendString("RMS = ");
+            UART_SendDec(FFT_GetRMS());
+            UART_SendString("\r\n");
+            UART_SendString("Peak bin = ");
+            UART_SendDec(peak_bin);
+            UART_SendString("\r\n");
+            UART_SendString("Peak frequency = ");
+            UART_SendDec(FFT_GetPeakFrequency());
+            UART_SendString(" Hz\r\n");
+            UART_SendString("Peak magnitude = ");
+            UART_SendDec(FFT_GetMagnitude(peak_bin));
+            UART_SendString("\r\n");
+
+            Spectrum_Draw();
+            UART_SendString("Spectrum drawn\r\n");
+        }
+    }
+    else if (strcmp(command, "magdump") == 0)
+    {
+        if (!FFT_IsValid())
+        {
+            UART_SendString("No valid FFT result\r\n");
+            UART_SendString("Run fft first\r\n");
+        }
+        else
+        {
+            for (uint32_t bin = 0U; bin < 16U; bin++)
+            {
+                UART_SendString("Bin ");
+                UART_SendDec(bin);
+                UART_SendString(" = ");
+                UART_SendDec(FFT_GetMagnitude(bin));
+                UART_SendString("\r\n");
+            }
+        }
+    }
     else if (strcmp(command, "bars") == 0)
     {
         FillRgbBars(framebuffer);
@@ -198,11 +286,7 @@ static void Console_ProcessCommand(char *command)
     }
     else if (strcmp(command, "clear") == 0)
     {
-        for (uint32_t i = 0U; i < (LCD_WIDTH * LCD_HEIGHT); i++)
-        {
-            framebuffer[i] = 0x0000U;
-        }
-
+        Display_Clear(COLOR_BLACK);
         UART_SendString("Display cleared\r\n");
     }
     else if (command[0] != '\0')
@@ -225,6 +309,9 @@ static void Console_PrintHelp(void)
         "capturedma  - TIM2-triggered DMA capture\r\n"
         "dump        - Dump captured samples\r\n"
         "dump16      - Dump first 16 samples\r\n"
+        "signal      - Generate synthetic 1500 Hz signal\r\n"
+        "fft         - Process current sample buffer\r\n"
+        "magdump     - Dump FFT bins 0 through 15\r\n"
         "bars        - Draw RGB test bars\r\n"
         "clear       - Clear the display\r\n");
 }
@@ -262,47 +349,10 @@ static void Console_RunDmaCapture(void)
     while (captureComplete == 0)
     {
         if ((int32_t)(HAL_GetTick() - deadline) >= 0)
-{
-    UART_SendString("DMA capture timeout\r\n");
-
-    UART_SendString("TIM2_CR1=");
-    UART_SendHex32(TIM2->CR1);
-    UART_SendString("\r\n");
-
-    UART_SendString("TIM2_CR2=");
-    UART_SendHex32(TIM2->CR2);
-    UART_SendString("\r\n");
-
-    UART_SendString("TIM2_CNT=");
-    UART_SendHex32(TIM2->CNT);
-    UART_SendString("\r\n");
-
-    UART_SendString("TIM2_ARR=");
-    UART_SendHex32(TIM2->ARR);
-    UART_SendString("\r\n");
-
-    UART_SendString("ADC_CR2=");
-    UART_SendHex32(ADC1->CR2);
-    UART_SendString("\r\n");
-
-    UART_SendString("ADC_SR=");
-    UART_SendHex32(ADC1->SR);
-    UART_SendString("\r\n");
-
-    UART_SendString("DMA_CR=");
-    UART_SendHex32(DMA2_Stream0->CR);
-    UART_SendString("\r\n");
-
-    UART_SendString("DMA_NDTR=");
-    UART_SendHex32(DMA2_Stream0->NDTR);
-    UART_SendString("\r\n");
-
-    UART_SendString("DMA_LISR=");
-    UART_SendHex32(DMA2->LISR);
-    UART_SendString("\r\n");
-
-    return;
-}
+        {
+            UART_SendString("DMA capture timeout\r\n");
+            return;
+        }
     }
 
     if (captureComplete < 0)
@@ -381,6 +431,110 @@ static void FillRgbBars(volatile uint16_t *target)
             }
         }
     }
+}
+
+static int32_t Spectrum_BinToX(uint32_t bin)
+{
+    /* Bin 0 is DC. Map useful bins 1 through 127 across columns 0 through 239. */
+    if (bin < 1U)
+    {
+        bin = 1U;
+    }
+
+    if (bin >= FFT_BIN_COUNT)
+    {
+        bin = FFT_BIN_COUNT - 1U;
+    }
+
+    return (int32_t)(((bin - 1U) * (DISPLAY_WIDTH - 1U)) /
+                     (FFT_BIN_COUNT - 2U));
+}
+
+static int32_t Spectrum_MagnitudeToY(uint32_t magnitude)
+{
+    if (magnitude > SPECTRUM_MAX_MAG)
+    {
+        magnitude = SPECTRUM_MAX_MAG;
+    }
+
+    return SPECTRUM_BOTTOM -
+           (int32_t)((magnitude * SPECTRUM_HEIGHT) /
+                     SPECTRUM_MAX_MAG);
+}
+
+static void Spectrum_Draw(void)
+{
+    if (!FFT_IsValid())
+    {
+        return;
+    }
+
+    Display_Clear(COLOR_BLACK);
+
+    /* Graph outline and three horizontal reference guides. */
+    Display_DrawRect(0,
+                     SPECTRUM_TOP,
+                     (int32_t)DISPLAY_WIDTH,
+                     SPECTRUM_HEIGHT + 1,
+                     COLOR_GRAY);
+
+    for (int32_t y = SPECTRUM_TOP + (SPECTRUM_HEIGHT / 4);
+         y < SPECTRUM_BOTTOM;
+         y += (SPECTRUM_HEIGHT / 4))
+    {
+        Display_DrawLine(0,
+                         y,
+                         (int32_t)DISPLAY_WIDTH - 1,
+                         y,
+                         COLOR_DARK_GRAY);
+    }
+
+    /* Connect adjacent useful FFT bins to form a continuous spectrum trace. */
+    for (uint32_t bin = 2U; bin < FFT_BIN_COUNT; bin++)
+    {
+        int32_t x0 = Spectrum_BinToX(bin - 1U);
+        int32_t x1 = Spectrum_BinToX(bin);
+        int32_t y0 = Spectrum_MagnitudeToY(
+            FFT_GetMagnitude(bin - 1U));
+        int32_t y1 = Spectrum_MagnitudeToY(
+            FFT_GetMagnitude(bin));
+
+        Display_DrawLine(x0, y0, x1, y1, COLOR_GREEN);
+    }
+
+/* Draw a short red marker above the strongest FFT bin. */
+{
+    uint32_t peak_bin = FFT_GetPeakBin();
+
+    int32_t peak_x =
+        Spectrum_BinToX(peak_bin);
+
+    int32_t peak_y =
+        Spectrum_MagnitudeToY(
+            FFT_GetMagnitude(peak_bin));
+
+    int32_t marker_top = peak_y - 10;
+
+    if (marker_top < SPECTRUM_TOP)
+    {
+        marker_top = SPECTRUM_TOP;
+    }
+
+    Display_DrawLine(
+        peak_x,
+        marker_top,
+        peak_x,
+        peak_y,
+        COLOR_RED);
+
+    Display_DrawLine(
+        peak_x - 3,
+        marker_top,
+        peak_x + 3,
+        marker_top,
+        COLOR_RED);
+}
+
 }
 
 static void SystemClock_Config(void)

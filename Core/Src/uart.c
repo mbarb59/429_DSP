@@ -117,3 +117,16 @@ void UART_SendDec(uint32_t value)
 
     UART_SendString(&buffer[index]);
 }
+int UART_CharAvailable(void)
+{
+    return ((USART1->SR & USART_SR_RXNE) != 0U);
+}
+
+char UART_ReadChar(void)
+{
+    while ((USART1->SR & USART_SR_RXNE) == 0U)
+    {
+    }
+
+    return (char)(USART1->DR & 0xFFU);
+}

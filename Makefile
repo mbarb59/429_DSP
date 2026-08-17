@@ -31,6 +31,8 @@ Core/Src/ltdc_ili9341.c \
 Core/Src/f429_sdram.c \
 Core/Src/adc.c \
 Core/Src/capture.c \
+Core/Src/fft.c \
+Core/Src/display.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \
@@ -60,7 +62,7 @@ $(MCU) \
 -TLinker/STM32F429ZITX_FLASH.ld\
 -Wl,-Map=build/$(TARGET).map \
 -Wl,--gc-sections
-
+	
 OBJECTS = $(C_SOURCES:.c=.o)
 OBJECTS += $(ASM_SOURCES:.s=.o)
 
@@ -68,7 +70,7 @@ all: build/$(TARGET).elf build/$(TARGET).bin
 
 build/$(TARGET).elf: $(OBJECTS)
 	mkdir -p build
-	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	$(CC) $(OBJECTS) $(LDFLAGS) -o $@ -lm
 	$(SZ) $@
 
 build/$(TARGET).bin: build/$(TARGET).elf
@@ -85,3 +87,12 @@ clean:
 	rm -rf build/*
 
 .PHONY: all clean
+
+
+symbols:
+	build/429_DSP.el
+	arm-none-eabi-nm --print-size --size-sort --radix=d \
+	build/429_DSP.elf | tail -n
+size: build/429_DSP.elf
+	arm-none-eabi-size build/429_DSP.elf
+	arm-none-eabi-size -A build/429_DSP.elf

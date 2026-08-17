@@ -9,5 +9,7 @@ void UART_SendString(const char *s);
 void UART_Flush(void);
 void UART_SendHex32(uint32_t value);
 void UART_SendDec(uint32_t value);
+int UART_CharAvailable(void);
+char UART_ReadChar(void);
 
 #endif /* UART_H */
