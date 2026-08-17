@@ -2,7 +2,7 @@
 #define STM32F4XX_HAL_CONF_H
 
 #define HAL_MODULE_ENABLED
-
+#define HAL_I2C_MODULE_ENABLED
 #define HAL_GPIO_MODULE_ENABLED
 #define HAL_RCC_MODULE_ENABLED
 #define HAL_CORTEX_MODULE_ENABLED
@@ -28,6 +28,8 @@
 #define PREFETCH_ENABLE             1
 #define USE_RTOS                    0
 
+
+
 #include "stm32f4xx_hal_dma.h"
 #include "stm32f4xx_hal_flash.h"
 #include "stm32f4xx_hal_rcc.h"
@@ -36,6 +38,10 @@
 #include "stm32f4xx_hal_spi.h"
 #include "stm32f4xx_hal_ltdc.h"
 #include "stm32f4xx_hal_sdram.h"
+
+#ifdef HAL_I2C_MODULE_ENABLED
+#include "stm32f4xx_hal_i2c.h"
+#endif
 
 #define assert_param(expr) ((void)0)
 

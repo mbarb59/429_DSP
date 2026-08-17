@@ -44,9 +44,6 @@
 #define LCD_RESET_PORT          GPIOA
 #define LCD_RESET_PIN           GPIO_PIN_1
 
-#define LCD_BACKLIGHT_PORT      GPIOA
-#define LCD_BACKLIGHT_PIN       GPIO_PIN_8
-
 #define LCD_WIDTH               240U
 #define LCD_HEIGHT              320U
 
@@ -128,12 +125,10 @@ HAL_StatusTypeDef ili9341_init_spi(void)
     gpio_init_output(LCD_CS_PORT, LCD_CS_PIN);
     gpio_init_output(LCD_DC_PORT, LCD_DC_PIN);
     gpio_init_output(LCD_RESET_PORT, LCD_RESET_PIN);
-    gpio_init_output(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN);
 
     gpio_write(LCD_CS_PORT, LCD_CS_PIN, GPIO_PIN_SET);
     gpio_write(LCD_DC_PORT, LCD_DC_PIN, GPIO_PIN_SET);
     gpio_write(LCD_RESET_PORT, LCD_RESET_PIN, GPIO_PIN_SET);
-    gpio_write(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN, GPIO_PIN_RESET);
 
     hspi_lcd.Instance = LCD_SPI;
     hspi_lcd.Init.Mode = SPI_MODE_MASTER;
@@ -251,9 +246,6 @@ HAL_StatusTypeDef ili9341_init_sequence(void)
         return HAL_ERROR;
     }
     HAL_Delay(20U);
-
-    gpio_write(LCD_BACKLIGHT_PORT, LCD_BACKLIGHT_PIN, GPIO_PIN_SET);
-    HAL_Delay(10U);
 
     return HAL_OK;
 }
