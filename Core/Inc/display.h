@@ -42,7 +42,7 @@ void Display_DrawChar(int32_t x,
 		      int32_t y,
                       char character,
                       uint16_t foreground,
-                      uint16_tbackground);
+                      uint16_t background);
 void Display_DrawString(int32_t x,
                       int32_t y,
                       const char *text,
