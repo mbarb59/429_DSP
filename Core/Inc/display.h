@@ -16,6 +16,9 @@
 #define COLOR_MAGENTA    0xF81FU
 #define COLOR_GRAY       0x8410U
 #define COLOR_DARK_GRAY  0x4208U
+#define DISPLAY_FONT_WIDTH 5U
+#define DISPLAY_FONT_HEIGHT 7U
+#define DISPLAY_FONT_SCALE 1U
 
 void Display_Init(uint32_t framebuffer_address);
 void Display_Clear(uint16_t color);
@@ -35,5 +38,15 @@ void Display_DrawRect(int32_t x,
                       int32_t width,
                       int32_t height,
                       uint16_t color);
+void Display_DrawChar(int32_t x,
+		      int32_t y,
+                      char character,
+                      uint16_t foreground,
+                      uint16_tbackground);
+void Display_DrawString(int32_t x,
+                      int32_t y,
+                      const char *text,
+                      uint16_t foreground,
+                      uint16_t background);
 
 #endif /* DISPLAY_H */
