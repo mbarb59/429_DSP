@@ -11,6 +11,7 @@
 #include "display.h"
 #include "i2c3.h"
 #include "stmpe811.h"
+#include "ui.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -131,6 +132,16 @@ UART_SendString("LTDC INIT...\r\n");
 
     UART_SendString("DISPLAY OK\r\n");
 
+    UART_SendString("TOUCH INIT...\r\n");
+
+    if (STMPE811_Init() != HAL_OK)
+    {
+        UART_SendString("TOUCH INIT FAIL\r\n");
+        Error_Handler();
+    }
+
+    UART_SendString("TOUCH OK\r\n");
+
     ADC_Init();
     DMA_Init();
 
@@ -141,12 +152,16 @@ UART_SendString("LTDC INIT...\r\n");
     }
 
     UART_SendString("ADC/DMA OK\r\n");
+    UI_Init();
+    UART_SendString("UI OK\r\n");
+    
     UART_SendString("Type help for commands.\r\n");
     Console_PrintPrompt();
-
+    
     while (1)
     {
         Console_Poll();
+        UI_ProcessTouch();
     }
 }
 
@@ -532,7 +547,45 @@ else if (strcmp(command, "gridtest") == 0)
     LTDC->ICR = LTDC_ICR_CFUIF |
                 LTDC_ICR_CTERRIF;
 }
-    else if (command[0] != '\0')
+    else if (strcmp(command, "touch") == 0)
+{
+    STMPE811_TouchData touch = {0};
+
+    if (!STMPE811_IsInitialized())
+    {
+        UART_SendString("Touch controller not initialized\r\n");
+        UART_SendString("Run touchinit first\r\n");
+    }
+    else if (STMPE811_ReadTouch(&touch) != HAL_OK)
+    {
+        UART_SendString("Touch read failed\r\n");
+    }
+    else if (!touch.pressed)
+    {
+        UART_SendString("No touch detected\r\n");
+    }
+    else
+    {
+        UART_SendString("Touch detected\r\n");
+
+        UART_SendString("Raw X = ");
+        UART_SendDec(touch.raw_x);
+        UART_SendString("\r\n");
+
+        UART_SendString("Raw Y = ");
+        UART_SendDec(touch.raw_y);
+        UART_SendString("\r\n");
+
+        UART_SendString("Screen X = ");
+        UART_SendDec(touch.x);
+        UART_SendString("\r\n");
+
+        UART_SendString("Screen Y = ");
+        UART_SendDec(touch.y);
+        UART_SendString("\r\n");
+    }
+}
+	else if (command[0] != '\0')
     {
         UART_SendString("Unknown command\r\n");
     }
@@ -562,6 +615,7 @@ static void Console_PrintHelp(void)
         "touchraw    - Read one raw touch sample\r\n"
         "corners     - Draw touch calibration corners\r\n"
 	"ltdcstat    - Check LTDC error flags\r\n"
+        "touch       - Read calibrated touch coordinates\r\n"
         "gridtest    - Draw display geometry test\r\n");
 }
 

@@ -1,9 +1,13 @@
 /*
  * STMPE811 resistive-touch controller driver for STM32F429I-DISC1.
  *
- * This module initializes the touchscreen controller and returns raw
- * 12-bit X/Y coordinates. Calibration, landscape rotation, gestures,
- * zooming, and UI button handling belong in a higher-level UI module.
+ * I2C3 provides access to the touch controller. This module supports both
+ * raw 12-bit touchscreen coordinates and calibrated logical coordinates for
+ * the 320 x 240 landscape graphics orientation used by the analyzer.
+ *
+ * Calibration values are compiled into Flash and therefore survive reset and
+ * power loss. Gesture handling, zooming, panning, and UI button processing
+ * belong in a higher-level UI module.
  */
 
 #include "stmpe811.h"
@@ -11,6 +15,26 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* Logical landscape display dimensions. */
+#define TOUCH_SCREEN_WIDTH            320U
+#define TOUCH_SCREEN_HEIGHT           240U
+
+/*
+ * Measured calibration data for the installed LCD/touch panel.
+ *
+ * Logical top edge:    raw X approximately 521
+ * Logical bottom edge: raw X approximately 3561
+ * Logical left edge:   raw Y approximately 3595
+ * Logical right edge:  raw Y approximately 354
+ *
+ * Raw X becomes logical Y.
+ * Raw Y becomes inverted logical X.
+ */
+#define TOUCH_RAW_X_TOP               521U
+#define TOUCH_RAW_X_BOTTOM           3561U
+#define TOUCH_RAW_Y_LEFT             3595U
+#define TOUCH_RAW_Y_RIGHT             354U
 
 #define STMPE811_REG_CHIP_ID_MSB       0x00U
 #define STMPE811_REG_CHIP_ID_LSB       0x01U
@@ -55,6 +79,54 @@ static HAL_StatusTypeDef stmpe811_write_u8(uint8_t register_address,
     return I2C3_WriteRegister(STMPE811_I2C_ADDRESS,
                               register_address,
                               value);
+}
+
+static uint16_t stmpe811_scale(uint16_t value,
+                               uint16_t input_min,
+                               uint16_t input_max,
+                               uint16_t output_max)
+{
+    uint32_t numerator;
+    uint32_t denominator;
+
+    if (value <= input_min)
+    {
+        return 0U;
+    }
+
+    if (value >= input_max)
+    {
+        return output_max;
+    }
+
+    numerator = (uint32_t)(value - input_min) * output_max;
+    denominator = (uint32_t)(input_max - input_min);
+
+    return (uint16_t)((numerator + (denominator / 2U)) / denominator);
+}
+
+static uint16_t stmpe811_scale_inverted(uint16_t value,
+                                        uint16_t input_high,
+                                        uint16_t input_low,
+                                        uint16_t output_max)
+{
+    uint32_t numerator;
+    uint32_t denominator;
+
+    if (value >= input_high)
+    {
+        return 0U;
+    }
+
+    if (value <= input_low)
+    {
+        return output_max;
+    }
+
+    numerator = (uint32_t)(input_high - value) * output_max;
+    denominator = (uint32_t)(input_high - input_low);
+
+    return (uint16_t)((numerator + (denominator / 2U)) / denominator);
 }
 
 HAL_StatusTypeDef STMPE811_ReadChipId(uint16_t *chip_id)
@@ -110,7 +182,6 @@ HAL_StatusTypeDef STMPE811_Init(void)
         return HAL_ERROR;
     }
 
-    /* Software reset. */
     if (stmpe811_write_u8(STMPE811_REG_SYS_CTRL1,
                           STMPE811_SYS_CTRL1_RESET) != HAL_OK)
     {
@@ -126,13 +197,11 @@ HAL_StatusTypeDef STMPE811_Init(void)
 
     HAL_Delay(2U);
 
-    /* Enable the GPIO, touchscreen, and ADC blocks. */
     if (stmpe811_write_u8(STMPE811_REG_SYS_CTRL2, 0x00U) != HAL_OK)
     {
         return HAL_ERROR;
     }
 
-    /* ADC: 12-bit conversion and 3.25 MHz ADC clock. */
     if (stmpe811_write_u8(STMPE811_REG_ADC_CTRL1, 0x49U) != HAL_OK)
     {
         return HAL_ERROR;
@@ -145,13 +214,11 @@ HAL_StatusTypeDef STMPE811_Init(void)
         return HAL_ERROR;
     }
 
-    /* Put the touchscreen pins under touchscreen-controller control. */
     if (stmpe811_write_u8(STMPE811_REG_GPIO_AF, 0x00U) != HAL_OK)
     {
         return HAL_ERROR;
     }
 
-    /* 4-sample averaging, 500 us touch delay, 500 us settling time. */
     if (stmpe811_write_u8(STMPE811_REG_TSC_CFG, 0x9AU) != HAL_OK)
     {
         return HAL_ERROR;
@@ -172,7 +239,6 @@ HAL_StatusTypeDef STMPE811_Init(void)
         return HAL_ERROR;
     }
 
-    /* Clear pending touchscreen and FIFO status bits. */
     if (stmpe811_write_u8(STMPE811_REG_INT_STA, 0xFFU) != HAL_OK)
     {
         return HAL_ERROR;
@@ -220,6 +286,8 @@ HAL_StatusTypeDef STMPE811_ReadRaw(STMPE811_TouchData *touch)
     touch->pressed = false;
     touch->raw_x = 0U;
     touch->raw_y = 0U;
+    touch->x = 0U;
+    touch->y = 0U;
     touch->pressure = 0U;
 
     if (!STMPE811_IsTouched())
@@ -244,8 +312,41 @@ HAL_StatusTypeDef STMPE811_ReadRaw(STMPE811_TouchData *touch)
     touch->pressure = data[3];
     touch->pressed = true;
 
-    /* Discard older queued samples so the next read is current. */
     STMPE811_ClearFIFO();
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef STMPE811_ReadTouch(STMPE811_TouchData *touch)
+{
+    HAL_StatusTypeDef status;
+
+    if (touch == NULL)
+    {
+        return HAL_ERROR;
+    }
+
+    status = STMPE811_ReadRaw(touch);
+
+    if (status != HAL_OK || !touch->pressed)
+    {
+        return status;
+    }
+
+    /*
+     * Logical landscape X comes from inverted raw Y.
+     * Logical landscape Y comes from raw X.
+     */
+    touch->x = stmpe811_scale_inverted(
+        touch->raw_y,
+        TOUCH_RAW_Y_LEFT,
+        TOUCH_RAW_Y_RIGHT,
+        TOUCH_SCREEN_WIDTH - 1U);
+
+    touch->y = stmpe811_scale_inverted(
+       touch->raw_x,
+       TOUCH_RAW_X_BOTTOM,
+       TOUCH_RAW_X_TOP,
+       TOUCH_SCREEN_HEIGHT - 1U);
 
     return HAL_OK;
 }

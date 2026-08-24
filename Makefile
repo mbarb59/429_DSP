@@ -35,6 +35,7 @@ Core/Src/fft.c \
 Core/Src/display.c \
 Core/Src/i2c3.c \
 Core/Src/stmpe811.c \
+Core/Src/ui.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \

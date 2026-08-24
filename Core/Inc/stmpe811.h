@@ -14,6 +14,8 @@ typedef struct
     bool pressed;
     uint16_t raw_x;
     uint16_t raw_y;
+    uint16_t x;
+    uint16_t y;
     uint8_t pressure;
 } STMPE811_TouchData;
 
@@ -22,6 +24,7 @@ HAL_StatusTypeDef STMPE811_ReadChipId(uint16_t *chip_id);
 bool STMPE811_IsInitialized(void);
 bool STMPE811_IsTouched(void);
 HAL_StatusTypeDef STMPE811_ReadRaw(STMPE811_TouchData *touch);
+HAL_StatusTypeDef STMPE811_ReadTouch(STMPE811_TouchData *touch);
 void STMPE811_ClearFIFO(void);
 
 #endif /* STMPE811_H */
