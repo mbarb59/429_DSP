@@ -315,6 +315,40 @@ static void Console_ProcessCommand(char *command)
             }
         }
     }
+    else if (strcmp(command, "texttest") == 0)
+    {
+    Display_Clear(COLOR_BLACK);
+
+    Display_DrawString(
+        10,
+        20,
+        "0123456789",
+        COLOR_WHITE,
+        COLOR_BLACK);
+
+    Display_DrawString(
+        10,
+        40,
+        "938 Hz",
+        COLOR_YELLOW,
+        COLOR_BLACK);
+
+    Display_DrawString(
+        10,
+        60,
+        "1500 Hz",
+        COLOR_GREEN,
+        COLOR_BLACK);
+
+    Display_DrawString(
+        10,
+        80,
+        "2063 Hz",
+        COLOR_CYAN,
+        COLOR_BLACK);
+
+    UART_SendString("LCD text test drawn\r\n");
+    }
     else if (strcmp(command, "bars") == 0)
     {
         FillRgbBars(framebuffer);
@@ -608,6 +642,7 @@ static void Console_PrintHelp(void)
         "signal      - Generate synthetic 1500 Hz signal\r\n"
         "fft         - Process current sample buffer\r\n"
         "magdump     - Dump FFT bins 0 through 15\r\n"
+        "texttest    - Draw LCD font test\r\n"
         "bars        - Draw RGB test bars\r\n"
         "clear       - Clear the display\r\n"
         "i2c         - Test STMPE811 I2C connection\r\n"
