@@ -36,6 +36,7 @@ static void Console_PrintPrompt(void);
 static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
 static void Console_RunDmaCapture(void);
+static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
 static int32_t Spectrum_BinToX(uint32_t bin);
 static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
@@ -237,6 +238,10 @@ static void Console_ProcessCommand(char *command)
     else if (strcmp(command, "capturedma") == 0)
     {
         Console_RunDmaCapture();
+    }
+    else if (strcmp(command, "micstats") == 0)
+    {
+        Console_RunMicStats();
     }
     else if (strcmp(command, "dump") == 0)
     {
@@ -644,6 +649,7 @@ static void Console_PrintHelp(void)
         "adc         - Read ADC1 channel 0 on PA0\r\n"
         "capture     - CPU-polled capture\r\n"
         "capturedma  - TIM2-triggered DMA capture\r\n"
+        "micstats    - Capture and show microphone statistics\r\n"
         "dump        - Dump captured samples\r\n"
         "dump16      - Dump first 16 samples\r\n"
         "signal      - Generate synthetic 1500 Hz signal\r\n"
@@ -727,6 +733,126 @@ static void Console_RunDmaCapture(void)
     UART_SendString("Last Sample = ");
     UART_SendDec(sampleBuffer[SAMPLE_COUNT - 1U]);
     UART_SendString("\r\n");
+}
+
+static void Console_RunMicStats(void)
+{
+    uint32_t deadline;
+    uint16_t minimum;
+    uint16_t maximum;
+    uint64_t sum = 0U;
+    uint32_t average;
+    uint32_t peak_to_peak;
+    uint32_t peak_bin;
+    bool near_clip_low = false;
+    bool near_clip_high = false;
+
+    UART_SendString("Starting microphone capture...\r\n");
+    DMA_CaptureSamples();
+
+    deadline = HAL_GetTick() + DMA_TIMEOUT_MS;
+
+    while (captureComplete == 0)
+    {
+        if ((int32_t)(HAL_GetTick() - deadline) >= 0)
+        {
+            UART_SendString("Microphone capture timeout\r\n");
+            return;
+        }
+    }
+
+    if (captureComplete < 0)
+    {
+        UART_SendString("Microphone capture error\r\n");
+        return;
+    }
+
+    if (sampleCount == 0U)
+    {
+        UART_SendString("Microphone buffer empty\r\n");
+        return;
+    }
+
+    minimum = sampleBuffer[0];
+    maximum = sampleBuffer[0];
+
+    for (uint32_t i = 0U; i < sampleCount; i++)
+    {
+        uint16_t sample = sampleBuffer[i];
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+
+        if (sample <= 50U)
+        {
+            near_clip_low = true;
+        }
+
+        if (sample >= 4045U)
+        {
+            near_clip_high = true;
+        }
+
+        sum += sample;
+    }
+
+    average = (uint32_t)(sum / sampleCount);
+    peak_to_peak = (uint32_t)maximum - (uint32_t)minimum;
+
+    if (!FFT_Process())
+    {
+        UART_SendString("FFT processing failed\r\n");
+        return;
+    }
+
+    peak_bin = FFT_GetPeakBin();
+
+    UART_SendString("Microphone Statistics\r\n");
+    UART_SendString("---------------------\r\n");
+    UART_SendString("Samples         = ");
+    UART_SendDec(sampleCount);
+    UART_SendString("\r\n");
+    UART_SendString("Sample Rate     = ");
+    UART_SendDec(FFT_GetSampleRate());
+    UART_SendString(" SPS\r\n");
+    UART_SendString("Minimum         = ");
+    UART_SendDec(minimum);
+    UART_SendString("\r\n");
+    UART_SendString("Maximum         = ");
+    UART_SendDec(maximum);
+    UART_SendString("\r\n");
+    UART_SendString("DC Average      = ");
+    UART_SendDec(average);
+    UART_SendString("\r\n");
+    UART_SendString("Peak-to-Peak    = ");
+    UART_SendDec(peak_to_peak);
+    UART_SendString("\r\n");
+    UART_SendString("AC RMS          = ");
+    UART_SendDec(FFT_GetRMS());
+    UART_SendString("\r\n");
+    UART_SendString("Near Clip Low   = ");
+    UART_SendString(near_clip_low ? "YES\r\n" : "NO\r\n");
+    UART_SendString("Near Clip High  = ");
+    UART_SendString(near_clip_high ? "YES\r\n" : "NO\r\n");
+    UART_SendString("Peak Bin        = ");
+    UART_SendDec(peak_bin);
+    UART_SendString("\r\n");
+    UART_SendString("Peak Frequency  = ");
+    UART_SendDec(FFT_GetPeakFrequency());
+    UART_SendString(" Hz\r\n");
+    UART_SendString("Peak Magnitude  = ");
+    UART_SendDec(FFT_GetMagnitude(peak_bin));
+    UART_SendString("\r\n");
+
+    Spectrum_Draw();
+    UART_SendString("Spectrum drawn\r\n");
 }
 
 static void Console_DumpSamples(uint32_t count)
