@@ -39,6 +39,13 @@ static void Console_RunDmaCapture(void);
 static void Console_DumpSamples(uint32_t count);
 static int32_t Spectrum_BinToX(uint32_t bin);
 static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
+static uint32_t Spectrum_StringWidth(const char *text);
+static void Spectrum_FormatFrequency(uint32_t frequency_hz,
+                                     char *buffer,
+                                     uint32_t buffer_size);
+static void Spectrum_DrawPeakLabel(int32_t peak_x,
+                                   int32_t peak_y,
+                                   uint32_t frequency_hz);
 static void Spectrum_Draw(void);
 
 static volatile uint16_t *const framebuffer =
@@ -800,6 +807,123 @@ static int32_t Spectrum_MagnitudeToY(uint32_t magnitude)
                      SPECTRUM_MAX_MAG);
 }
 
+static uint32_t Spectrum_StringWidth(const char *text)
+{
+    uint32_t character_count = 0U;
+
+    if (text == NULL)
+    {
+        return 0U;
+    }
+
+    while (*text != '\0')
+    {
+        character_count++;
+        text++;
+    }
+
+    if (character_count == 0U)
+    {
+        return 0U;
+    }
+
+    return (character_count * (DISPLAY_FONT_WIDTH + 1U)) - 1U;
+}
+
+static void Spectrum_FormatFrequency(uint32_t frequency_hz,
+                                     char *buffer,
+                                     uint32_t buffer_size)
+{
+    char reversed_digits[10];
+    uint32_t digit_count = 0U;
+    uint32_t output_index = 0U;
+
+    if ((buffer == NULL) || (buffer_size < 5U))
+    {
+        return;
+    }
+
+    if (frequency_hz == 0U)
+    {
+        reversed_digits[digit_count++] = '0';
+    }
+    else
+    {
+        while ((frequency_hz != 0U) &&
+               (digit_count < (uint32_t)sizeof(reversed_digits)))
+        {
+            reversed_digits[digit_count++] =
+                (char)('0' + (frequency_hz % 10U));
+            frequency_hz /= 10U;
+        }
+    }
+
+    while ((digit_count != 0U) &&
+           (output_index < (buffer_size - 4U)))
+    {
+        digit_count--;
+        buffer[output_index++] = reversed_digits[digit_count];
+    }
+
+    buffer[output_index++] = ' ';
+    buffer[output_index++] = 'H';
+    buffer[output_index++] = 'z';
+    buffer[output_index] = '\0';
+}
+
+static void Spectrum_DrawPeakLabel(int32_t peak_x,
+                                   int32_t peak_y,
+                                   uint32_t frequency_hz)
+{
+    char frequency_text[12];
+    uint32_t text_width;
+    int32_t label_x;
+    int32_t label_y;
+
+    Spectrum_FormatFrequency(frequency_hz,
+                             frequency_text,
+                             sizeof(frequency_text));
+
+    text_width = Spectrum_StringWidth(frequency_text);
+
+    if (text_width == 0U)
+    {
+        return;
+    }
+
+    label_x = peak_x - ((int32_t)text_width / 2);
+    label_y = peak_y - 10 - (int32_t)DISPLAY_FONT_HEIGHT - 3;
+
+    if (label_x < 2)
+    {
+        label_x = 2;
+    }
+
+    if ((label_x + (int32_t)text_width) >
+        ((int32_t)DISPLAY_WIDTH - 2))
+    {
+        label_x =
+            (int32_t)DISPLAY_WIDTH - (int32_t)text_width - 2;
+    }
+
+    if (label_y < (SPECTRUM_TOP + 2))
+    {
+        label_y = SPECTRUM_TOP + 2;
+    }
+
+    Display_FillRect(label_x - 2,
+                     label_y - 1,
+                     (int32_t)text_width + 4,
+                     (int32_t)DISPLAY_FONT_HEIGHT + 2,
+                     COLOR_BLACK);
+
+    Display_DrawString(label_x,
+                       label_y,
+                       frequency_text,
+                       COLOR_YELLOW,
+                       COLOR_BLACK);
+}
+
 static void Spectrum_Draw(void)
 {
     if (!FFT_IsValid())
@@ -871,6 +995,11 @@ static void Spectrum_Draw(void)
         peak_x + 3,
         marker_top,
         COLOR_RED);
+
+    Spectrum_DrawPeakLabel(
+        peak_x,
+        peak_y,
+        FFT_GetPeakFrequency());
 }
 
 }
