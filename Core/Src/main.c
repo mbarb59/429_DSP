@@ -32,6 +32,7 @@
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
+static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
 static void Console_Poll(void);
 static void Console_ProcessCommand(char *command);
@@ -59,6 +60,17 @@ static volatile uint16_t *const framebuffer =
 
 static char command_buffer[COMMAND_BUFFER_SIZE];
 static uint32_t command_length;
+
+typedef enum
+{
+    ANALYZER_STOPPED = 0,
+    ANALYZER_START_CAPTURE,
+    ANALYZER_WAIT_CAPTURE
+} AnalyzerState;
+
+static AnalyzerState analyzer_state = ANALYZER_STOPPED;
+static uint32_t analyzer_frame_count;
+static uint32_t analyzer_error_count;
 
 static uint32_t spectrum_max_magnitude =
     SPECTRUM_SCALE_DEFAULT;
@@ -178,6 +190,7 @@ UART_SendString("LTDC INIT...\r\n");
     {
         Console_Poll();
         UI_ProcessTouch();
+        Analyzer_Process();
     }
 }
 
@@ -1256,6 +1269,63 @@ static void Spectrum_Draw(void)
         FFT_GetPeakFrequency());
 }
 
+}
+
+static void Analyzer_Process(void)
+{
+    if (!UI_IsRunning())
+    {
+        analyzer_state = ANALYZER_STOPPED;
+        return;
+    }
+
+    switch (analyzer_state)
+    {
+        case ANALYZER_STOPPED:
+            analyzer_state = ANALYZER_START_CAPTURE;
+            break;
+
+        case ANALYZER_START_CAPTURE:
+            DMA_CaptureSamples();
+            analyzer_state = ANALYZER_WAIT_CAPTURE;
+            break;
+
+        case ANALYZER_WAIT_CAPTURE:
+            if (captureComplete == 0)
+            {
+                break;
+            }
+
+            if (captureComplete < 0)
+            {
+                analyzer_error_count++;
+                UI_SetRunning(false);
+                analyzer_state = ANALYZER_STOPPED;
+                UART_SendString("Continuous capture error\r\n");
+                break;
+            }
+
+            if (!FFT_Process())
+            {
+                analyzer_error_count++;
+                UI_SetRunning(false);
+                analyzer_state = ANALYZER_STOPPED;
+                UART_SendString("Continuous FFT error\r\n");
+                break;
+            }
+
+            analyzer_frame_count++;
+            UI_NotifySpectrumChanged();
+            analyzer_state = ANALYZER_START_CAPTURE;
+            break;
+
+        default:
+            analyzer_error_count++;
+            UI_SetRunning(false);
+            analyzer_state = ANALYZER_STOPPED;
+            UART_SendString("Continuous analyzer state error\r\n");
+            break;
+    }
 }
 
 static void SystemClock_Config(void)
