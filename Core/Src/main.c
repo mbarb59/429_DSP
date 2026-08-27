@@ -25,7 +25,10 @@
 #define SPECTRUM_TOP           20
 #define SPECTRUM_BOTTOM        220
 #define SPECTRUM_HEIGHT        (SPECTRUM_BOTTOM - SPECTRUM_TOP)
-#define SPECTRUM_MAX_MAG       1600U
+
+#define SPECTRUM_SCALE_DEFAULT 1600U
+#define SPECTRUM_SCALE_MIN     100U
+#define SPECTRUM_SCALE_MAX     65535U
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
@@ -40,6 +43,8 @@ static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
 static int32_t Spectrum_BinToX(uint32_t bin);
 static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
+static void Spectrum_SetScale(uint32_t new_scale);
+static void Spectrum_AutoScale(void);
 static uint32_t Spectrum_StringWidth(const char *text);
 static void Spectrum_FormatFrequency(uint32_t frequency_hz,
                                      char *buffer,
@@ -54,6 +59,9 @@ static volatile uint16_t *const framebuffer =
 
 static char command_buffer[COMMAND_BUFFER_SIZE];
 static uint32_t command_length;
+
+static uint32_t spectrum_max_magnitude =
+    SPECTRUM_SCALE_DEFAULT;
 
 void SysTick_Handler(void)
 {
@@ -326,6 +334,30 @@ static void Console_ProcessCommand(char *command)
                 UART_SendString("\r\n");
             }
         }
+    }
+    else if (strcmp(command, "scale100") == 0)
+    {
+        Spectrum_SetScale(100U);
+    }
+    else if (strcmp(command, "scale200") == 0)
+    {
+        Spectrum_SetScale(200U);
+    }
+    else if (strcmp(command, "scale500") == 0)
+    {
+        Spectrum_SetScale(500U);
+    }
+    else if (strcmp(command, "scale1000") == 0)
+    {
+        Spectrum_SetScale(1000U);
+    }
+    else if (strcmp(command, "scale1600") == 0)
+    {
+        Spectrum_SetScale(SPECTRUM_SCALE_DEFAULT);
+    }
+    else if (strcmp(command, "autoscale") == 0)
+    {
+        Spectrum_AutoScale();
     }
     else if (strcmp(command, "texttest") == 0)
     {
@@ -655,6 +687,12 @@ static void Console_PrintHelp(void)
         "signal      - Generate synthetic 1500 Hz signal\r\n"
         "fft         - Process current sample buffer\r\n"
         "magdump     - Dump FFT bins 0 through 15\r\n"
+        "scale100    - Set graph magnitude scale to 100\r\n"
+        "scale200    - Set graph magnitude scale to 200\r\n"
+        "scale500    - Set graph magnitude scale to 500\r\n"
+        "scale1000   - Set graph magnitude scale to 1000\r\n"
+        "scale1600   - Restore default magnitude scale\r\n"
+        "autoscale   - Scale graph to current FFT result\r\n"
         "texttest    - Draw LCD font test\r\n"
         "bars        - Draw RGB test bars\r\n"
         "clear       - Clear the display\r\n"
@@ -921,16 +959,106 @@ static int32_t Spectrum_BinToX(uint32_t bin)
                      (FFT_BIN_COUNT - 2U));
 }
 
-static int32_t Spectrum_MagnitudeToY(uint32_t magnitude)
+static void Spectrum_SetScale(uint32_t new_scale)
 {
-    if (magnitude > SPECTRUM_MAX_MAG)
+    if (new_scale < SPECTRUM_SCALE_MIN)
     {
-        magnitude = SPECTRUM_MAX_MAG;
+        new_scale = SPECTRUM_SCALE_MIN;
     }
 
-    return SPECTRUM_BOTTOM -
-           (int32_t)((magnitude * SPECTRUM_HEIGHT) /
-                     SPECTRUM_MAX_MAG);
+    if (new_scale > SPECTRUM_SCALE_MAX)
+    {
+        new_scale = SPECTRUM_SCALE_MAX;
+    }
+
+    spectrum_max_magnitude = new_scale;
+
+    UART_SendString("Spectrum scale = ");
+    UART_SendDec(spectrum_max_magnitude);
+    UART_SendString("\r\n");
+
+    if (FFT_IsValid())
+    {
+        Spectrum_Draw();
+        UART_SendString("Spectrum redrawn\r\n");
+    }
+    else
+    {
+        UART_SendString("No valid FFT result to draw\r\n");
+    }
+}
+
+static void Spectrum_AutoScale(void)
+{
+    uint32_t maximum_magnitude = 0U;
+    uint32_t new_scale;
+
+    if (!FFT_IsValid())
+    {
+        UART_SendString("No valid FFT result\r\n");
+        UART_SendString("Run fft or micstats first\r\n");
+        return;
+    }
+
+    for (uint32_t bin = 1U; bin < FFT_BIN_COUNT; bin++)
+    {
+        uint32_t magnitude = FFT_GetMagnitude(bin);
+
+        if (magnitude > maximum_magnitude)
+        {
+            maximum_magnitude = magnitude;
+        }
+    }
+
+    new_scale = maximum_magnitude + (maximum_magnitude / 4U);
+
+    if (new_scale < SPECTRUM_SCALE_MIN)
+    {
+        new_scale = SPECTRUM_SCALE_MIN;
+    }
+
+    if (new_scale > SPECTRUM_SCALE_MAX)
+    {
+        new_scale = SPECTRUM_SCALE_MAX;
+    }
+
+    UART_SendString("Peak magnitude = ");
+    UART_SendDec(maximum_magnitude);
+    UART_SendString("\r\n");
+
+    UART_SendString("Old scale = ");
+    UART_SendDec(spectrum_max_magnitude);
+    UART_SendString("\r\n");
+
+    spectrum_max_magnitude = new_scale;
+
+    UART_SendString("New scale = ");
+    UART_SendDec(spectrum_max_magnitude);
+    UART_SendString("\r\n");
+
+    Spectrum_Draw();
+    UART_SendString("Spectrum redrawn\r\n");
+}
+
+static int32_t Spectrum_MagnitudeToY(uint32_t magnitude)
+{
+    uint64_t scaled_height;
+
+    if (spectrum_max_magnitude < SPECTRUM_SCALE_MIN)
+    {
+        spectrum_max_magnitude = SPECTRUM_SCALE_MIN;
+    }
+
+    if (magnitude > spectrum_max_magnitude)
+    {
+        magnitude = spectrum_max_magnitude;
+    }
+
+    scaled_height =
+        ((uint64_t)magnitude * (uint64_t)SPECTRUM_HEIGHT) /
+        (uint64_t)spectrum_max_magnitude;
+
+    return SPECTRUM_BOTTOM - (int32_t)scaled_height;
 }
 
 static uint32_t Spectrum_StringWidth(const char *text)
