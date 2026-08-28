@@ -21,6 +21,7 @@
 #define FRAMEBUFFER_ADDR       0xD0000000U
 #define COMMAND_BUFFER_SIZE    64U
 #define DMA_TIMEOUT_MS         1000U
+#define ANALYZER_DISPLAY_PERIOD_MS  50U
 
 #define SPECTRUM_TOP           20
 #define SPECTRUM_BOTTOM        220
@@ -71,6 +72,7 @@ typedef enum
 static AnalyzerState analyzer_state = ANALYZER_STOPPED;
 static uint32_t analyzer_frame_count;
 static uint32_t analyzer_error_count;
+static uint32_t analyzer_last_display_ms;
 
 static uint32_t spectrum_max_magnitude =
     SPECTRUM_SCALE_DEFAULT;
@@ -182,10 +184,10 @@ UART_SendString("LTDC INIT...\r\n");
     UART_SendString("ADC/DMA OK\r\n");
     UI_Init();
     UART_SendString("UI OK\r\n");
-    
+
     UART_SendString("Type help for commands.\r\n");
     Console_PrintPrompt();
-    
+
     while (1)
     {
         Console_Poll();
@@ -437,7 +439,7 @@ static void Console_ProcessCommand(char *command)
     uint16_t chip_id = 0U;
 
     UART_SendString("Initializing STMPE811...\r\n");
-    
+
     if (STMPE811_Init() != HAL_OK)
     {
         UART_SendString("STMPE811 initialization failed\r\n");
@@ -1315,7 +1317,14 @@ static void Analyzer_Process(void)
             }
 
             analyzer_frame_count++;
-            UI_NotifySpectrumChanged();
+
+            if ((HAL_GetTick() - analyzer_last_display_ms) >=
+                ANALYZER_DISPLAY_PERIOD_MS)
+            {
+                analyzer_last_display_ms = HAL_GetTick();
+                UI_NotifySpectrumChanged();
+            }
+
             analyzer_state = ANALYZER_START_CAPTURE;
             break;
 
