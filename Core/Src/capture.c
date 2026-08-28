@@ -16,7 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-uint16_t sampleBuffer[SAMPLE_COUNT];
+uint16_t sampleBuffer[CAPTURE_SAMPLE_COUNT_MAX];
 uint32_t sampleCount;
 volatile int captureComplete;
 uint32_t dmaCaptureCycles;
@@ -24,6 +24,7 @@ uint32_t sampleRate;
 
 static uint32_t capture_start_cycles;
 static uint32_t configured_rate_hz = CAPTURE_DEFAULT_RATE_HZ;
+static uint32_t configured_sample_count = CAPTURE_SAMPLE_COUNT_DEFAULT;
 static uint8_t capture_initialized;
 
 static void dwt_cycle_counter_init(void)
@@ -67,6 +68,21 @@ static void dma2_stream0_disable(void)
 static void tim2_stop(void)
 {
     TIM2->CR1 &= ~TIM_CR1_CEN;
+}
+
+static bool capture_is_idle(void)
+{
+    if ((DMA2_Stream0->CR & DMA_SxCR_EN) != 0U)
+    {
+        return false;
+    }
+
+    if ((TIM2->CR1 & TIM_CR1_CEN) != 0U)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 static bool tim2_configure_sample_rate(uint32_t requested_rate_hz)
@@ -113,9 +129,41 @@ static bool tim2_configure_sample_rate(uint32_t requested_rate_hz)
     return true;
 }
 
+bool Capture_IsValidSampleCount(uint32_t count)
+{
+    return (count == 256U) ||
+           (count == 512U) ||
+           (count == 1024U) ||
+           (count == 2048U);
+}
+
+bool Capture_SetSampleCount(uint32_t count)
+{
+    if (!Capture_IsValidSampleCount(count))
+    {
+        return false;
+    }
+
+    if (!capture_is_idle())
+    {
+        return false;
+    }
+
+    configured_sample_count = count;
+    sampleCount = 0U;
+    captureComplete = 1;
+
+    return true;
+}
+
+uint32_t Capture_GetSampleCount(void)
+{
+    return configured_sample_count;
+}
+
 bool Capture_SetSampleRate(uint32_t rate_hz)
 {
-    if ((DMA2_Stream0->CR & DMA_SxCR_EN) != 0U)
+    if (!capture_is_idle())
     {
         return false;
     }
@@ -130,15 +178,17 @@ uint32_t Capture_GetSampleRate(void)
 
 void Capture_Samples(void)
 {
+    uint32_t requested_count = configured_sample_count;
+
     sampleCount = 0U;
     captureComplete = 0;
 
-    for (uint32_t i = 0U; i < SAMPLE_COUNT; i++)
+    for (uint32_t i = 0U; i < requested_count; i++)
     {
         sampleBuffer[i] = ADC_Read();
     }
 
-    sampleCount = SAMPLE_COUNT;
+    sampleCount = requested_count;
     captureComplete = 1;
 }
 
@@ -181,21 +231,34 @@ void DMA_Init(void)
 
     dwt_cycle_counter_init();
 
+    configured_sample_count = CAPTURE_SAMPLE_COUNT_DEFAULT;
+
     if (!tim2_configure_sample_rate(CAPTURE_DEFAULT_RATE_HZ))
     {
         captureComplete = -1;
         return;
     }
 
+    sampleCount = 0U;
     captureComplete = 1;
     capture_initialized = 1U;
 }
 
 void DMA_CaptureSamples(void)
 {
+    uint32_t requested_count;
+
     DMA_Init();
 
     if (capture_initialized == 0U)
+    {
+        captureComplete = -1;
+        return;
+    }
+
+    requested_count = configured_sample_count;
+
+    if (!Capture_IsValidSampleCount(requested_count))
     {
         captureComplete = -1;
         return;
@@ -217,7 +280,7 @@ void DMA_CaptureSamples(void)
 
     DMA2_Stream0->PAR = (uint32_t)&ADC1->DR;
     DMA2_Stream0->M0AR = (uint32_t)sampleBuffer;
-    DMA2_Stream0->NDTR = SAMPLE_COUNT;
+    DMA2_Stream0->NDTR = requested_count;
 
     ADC_UseTimer2Trigger();
     ADC_EnableDMA();
@@ -246,7 +309,7 @@ void DMA2_Stream0_IRQHandler(void)
         ADC_UseSoftwareTrigger();
 
         dmaCaptureCycles = stop_cycles - capture_start_cycles;
-        sampleCount = SAMPLE_COUNT;
+        sampleCount = configured_sample_count;
         sampleRate = configured_rate_hz;
         captureComplete = 1;
 

@@ -14,6 +14,7 @@ void UI_SetRunning(bool running);
 bool UI_IsRunning(void);
 
 void UI_FullSpan(void);
+void UI_OnFFTConfigurationChanged(void);
 void UI_ZoomIn(void);
 void UI_ZoomOut(void);
 void UI_CenterOnPeak(void);

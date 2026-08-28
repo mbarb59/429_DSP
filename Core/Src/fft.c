@@ -1,13 +1,16 @@
 /*
- * Self-contained radix-2 FFT for the STM32F429 spectrum analyzer.
+ * Runtime-selectable radix-2 FFT for the STM32F429 spectrum analyzer.
  *
  * Processing chain:
  *   unsigned ADC samples
- *   -> mean/DC removal
- *   -> Hann window
- *   -> 256-point complex FFT
- *   -> positive-frequency magnitudes
- *   -> peak-bin and peak-frequency detection
+ *       -> mean/DC removal
+ *       -> Hann window
+ *       -> complex radix-2 FFT
+ *       -> positive-frequency magnitudes
+ *       -> peak-bin and peak-frequency detection
+ *
+ * Supported active FFT sizes:
+ *   256, 512, 1024, and 2048 samples
  */
 
 #include "fft.h"
@@ -22,26 +25,37 @@
 #define FFT_ADC_MAX            4095U
 #define FFT_DEFAULT_RATE_HZ    48000U
 
-#if FFT_SIZE != 256U
-#error "This implementation currently expects FFT_SIZE to be 256."
+#if CAPTURE_SAMPLE_COUNT_MAX < FFT_SIZE_MAX
+#error "CAPTURE_SAMPLE_COUNT_MAX must be at least FFT_SIZE_MAX."
 #endif
 
-#if SAMPLE_COUNT < FFT_SIZE
-#error "SAMPLE_COUNT must be at least FFT_SIZE."
-#endif
+static float fft_real[FFT_SIZE_MAX];
+static float fft_imag[FFT_SIZE_MAX];
+static float magnitudes[FFT_BIN_COUNT_MAX];
+static int32_t centered_samples[FFT_SIZE_MAX];
+static int32_t windowed_samples[FFT_SIZE_MAX];
 
-static float fft_real[FFT_SIZE];
-static float fft_imag[FFT_SIZE];
-static float magnitudes[FFT_BIN_COUNT];
-static int32_t centered_samples[FFT_SIZE];
-static int32_t windowed_samples[FFT_SIZE];
-
+static uint32_t active_fft_size = FFT_SIZE_DEFAULT;
+static uint32_t active_bin_count = FFT_SIZE_DEFAULT / 2U;
 static uint32_t fft_sample_rate_hz;
 static uint32_t fft_dc_counts;
 static uint32_t fft_rms_counts;
 static uint32_t peak_bin;
 static uint32_t peak_frequency_hz;
 static bool fft_valid;
+
+static uint32_t fft_log2_size(uint32_t fft_size)
+{
+    uint32_t bit_count = 0U;
+
+    while (fft_size > 1U)
+    {
+        fft_size >>= 1U;
+        bit_count++;
+    }
+
+    return bit_count;
+}
 
 static uint32_t reverse_bits(uint32_t value, uint32_t bit_count)
 {
@@ -58,9 +72,9 @@ static uint32_t reverse_bits(uint32_t value, uint32_t bit_count)
 
 static void bit_reverse_permute(void)
 {
-    const uint32_t bit_count = 8U;
+    uint32_t bit_count = fft_log2_size(active_fft_size);
 
-    for (uint32_t i = 0U; i < FFT_SIZE; i++)
+    for (uint32_t i = 0U; i < active_fft_size; i++)
     {
         uint32_t j = reverse_bits(i, bit_count);
 
@@ -83,14 +97,20 @@ static void radix2_fft(void)
 {
     bit_reverse_permute();
 
-    for (uint32_t length = 2U; length <= FFT_SIZE; length <<= 1U)
+    for (uint32_t length = 2U;
+         length <= active_fft_size;
+         length <<= 1U)
     {
         uint32_t half_length = length >> 1U;
         float angle_step = -FFT_TWO_PI / (float)length;
 
-        for (uint32_t start = 0U; start < FFT_SIZE; start += length)
+        for (uint32_t start = 0U;
+             start < active_fft_size;
+             start += length)
         {
-            for (uint32_t offset = 0U; offset < half_length; offset++)
+            for (uint32_t offset = 0U;
+                 offset < half_length;
+                 offset++)
             {
                 float angle = angle_step * (float)offset;
                 float twiddle_real = cosf(angle);
@@ -123,21 +143,22 @@ static void prepare_samples(void)
     uint64_t sum = 0U;
     double square_sum = 0.0;
 
-    for (uint32_t i = 0U; i < FFT_SIZE; i++)
+    for (uint32_t i = 0U; i < active_fft_size; i++)
     {
         sum += sampleBuffer[i];
     }
 
-    fft_dc_counts = (uint32_t)(sum / FFT_SIZE);
+    fft_dc_counts = (uint32_t)(sum / active_fft_size);
 
-    for (uint32_t i = 0U; i < FFT_SIZE; i++)
+    for (uint32_t i = 0U; i < active_fft_size; i++)
     {
         float centered =
-            (float)((int32_t)sampleBuffer[i] - (int32_t)fft_dc_counts);
+            (float)((int32_t)sampleBuffer[i] -
+                    (int32_t)fft_dc_counts);
 
         float window = 0.5f -
             (0.5f * cosf((FFT_TWO_PI * (float)i) /
-                         (float)(FFT_SIZE - 1U)));
+                         (float)(active_fft_size - 1U)));
 
         float windowed = centered * window;
 
@@ -149,7 +170,8 @@ static void prepare_samples(void)
         square_sum += (double)centered * (double)centered;
     }
 
-    fft_rms_counts = (uint32_t)sqrt(square_sum / (double)FFT_SIZE);
+    fft_rms_counts =
+        (uint32_t)sqrt(square_sum / (double)active_fft_size);
 }
 
 static void calculate_magnitudes(void)
@@ -158,14 +180,14 @@ static void calculate_magnitudes(void)
 
     peak_bin = 0U;
 
-    for (uint32_t bin = 0U; bin < FFT_BIN_COUNT; bin++)
+    for (uint32_t bin = 0U; bin < active_bin_count; bin++)
     {
         float real = fft_real[bin];
         float imag = fft_imag[bin];
         float magnitude = sqrtf((real * real) + (imag * imag));
 
         /* Approximate single-sided amplitude correction for the Hann window. */
-        magnitude *= (4.0f / (float)FFT_SIZE);
+        magnitude *= (4.0f / (float)active_fft_size);
         magnitudes[bin] = magnitude;
 
         /* Ignore DC when locating the spectral peak. */
@@ -178,13 +200,45 @@ static void calculate_magnitudes(void)
 
     peak_frequency_hz =
         (uint32_t)(((uint64_t)peak_bin * fft_sample_rate_hz +
-                    (FFT_SIZE / 2U)) /
-                   FFT_SIZE);
+                    (active_fft_size / 2U)) /
+                   active_fft_size);
+}
+
+bool FFT_IsValidSize(uint32_t fft_size)
+{
+    return (fft_size == 256U) ||
+           (fft_size == 512U) ||
+           (fft_size == 1024U) ||
+           (fft_size == 2048U);
+}
+
+bool FFT_SetSize(uint32_t fft_size)
+{
+    if (!FFT_IsValidSize(fft_size))
+    {
+        return false;
+    }
+
+    active_fft_size = fft_size;
+    active_bin_count = fft_size / 2U;
+    FFT_Invalidate();
+
+    return true;
+}
+
+uint32_t FFT_GetSize(void)
+{
+    return active_fft_size;
+}
+
+uint32_t FFT_GetBinCount(void)
+{
+    return active_bin_count;
 }
 
 bool FFT_Process(void)
 {
-    if (sampleCount < FFT_SIZE)
+    if (sampleCount != active_fft_size)
     {
         fft_valid = false;
         return false;
@@ -216,14 +270,15 @@ bool FFT_GenerateSine(uint32_t frequency_hz,
         rate_hz = FFT_DEFAULT_RATE_HZ;
     }
 
-    if ((frequency_hz >= (rate_hz / 2U)) ||
+    if ((Capture_GetSampleCount() != active_fft_size) ||
+        (frequency_hz >= (rate_hz / 2U)) ||
         (dc_offset_counts > FFT_ADC_MAX) ||
         (amplitude_counts > FFT_ADC_MAX))
     {
         return false;
     }
 
-    for (uint32_t i = 0U; i < FFT_SIZE; i++)
+    for (uint32_t i = 0U; i < active_fft_size; i++)
     {
         float phase = FFT_TWO_PI * (float)frequency_hz *
                       (float)i / (float)rate_hz;
@@ -243,7 +298,7 @@ bool FFT_GenerateSine(uint32_t frequency_hz,
         sampleBuffer[i] = (uint16_t)sample;
     }
 
-    sampleCount = FFT_SIZE;
+    sampleCount = active_fft_size;
     sampleRate = rate_hz;
     captureComplete = 1;
     fft_valid = false;
@@ -254,6 +309,13 @@ bool FFT_GenerateSine(uint32_t frequency_hz,
 bool FFT_IsValid(void)
 {
     return fft_valid;
+}
+
+void FFT_Invalidate(void)
+{
+    fft_valid = false;
+    peak_bin = 0U;
+    peak_frequency_hz = 0U;
 }
 
 uint32_t FFT_GetPeakBin(void)
@@ -268,12 +330,13 @@ uint32_t FFT_GetPeakFrequency(void)
 
 uint32_t FFT_GetBinWidthMilliHz(void)
 {
-    if (fft_sample_rate_hz == 0U)
+    if ((fft_sample_rate_hz == 0U) || (active_fft_size == 0U))
     {
         return 0U;
     }
 
-    return (uint32_t)(((uint64_t)fft_sample_rate_hz * 1000U) / FFT_SIZE);
+    return (uint32_t)(((uint64_t)fft_sample_rate_hz * 1000U) /
+                      active_fft_size);
 }
 
 uint32_t FFT_GetSampleRate(void)
@@ -293,7 +356,7 @@ uint32_t FFT_GetRMS(void)
 
 uint32_t FFT_GetMagnitude(uint32_t bin)
 {
-    if (bin >= FFT_BIN_COUNT)
+    if (bin >= active_bin_count)
     {
         return 0U;
     }
@@ -303,7 +366,7 @@ uint32_t FFT_GetMagnitude(uint32_t bin)
 
 int32_t FFT_GetCenteredSample(uint32_t index)
 {
-    if (index >= FFT_SIZE)
+    if (index >= active_fft_size)
     {
         return 0;
     }
@@ -313,7 +376,7 @@ int32_t FFT_GetCenteredSample(uint32_t index)
 
 int32_t FFT_GetWindowedSample(uint32_t index)
 {
-    if (index >= FFT_SIZE)
+    if (index >= active_fft_size)
     {
         return 0;
     }

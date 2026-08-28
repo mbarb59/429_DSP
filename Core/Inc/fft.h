@@ -4,18 +4,30 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define FFT_SIZE       256U
-#define FFT_BIN_COUNT  (FFT_SIZE / 2U)
+#define FFT_SIZE_DEFAULT   256U
+#define FFT_SIZE_MAX       2048U
+#define FFT_BIN_COUNT_MAX  (FFT_SIZE_MAX / 2U)
 
-/* Process sampleBuffer[] using the current sampleRate. */
+/*
+ * Temporary compatibility aliases for main.c and ui.c.
+ * Keep the active FFT size at 256 until those modules are runtime-sized.
+ */
+#define FFT_SIZE       FFT_SIZE_DEFAULT
+#define FFT_BIN_COUNT  (FFT_SIZE_DEFAULT / 2U)
+
 bool FFT_Process(void);
 
-/* Fill sampleBuffer[] with a synthetic ADC-style sine wave. */
 bool FFT_GenerateSine(uint32_t frequency_hz,
                       uint16_t amplitude_counts,
                       uint16_t dc_offset_counts);
 
+bool FFT_SetSize(uint32_t fft_size);
+bool FFT_IsValidSize(uint32_t fft_size);
+uint32_t FFT_GetSize(void);
+uint32_t FFT_GetBinCount(void);
+
 bool FFT_IsValid(void);
+void FFT_Invalidate(void);
 
 uint32_t FFT_GetPeakBin(void);
 uint32_t FFT_GetPeakFrequency(void);

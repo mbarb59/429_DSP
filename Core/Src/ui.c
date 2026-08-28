@@ -44,8 +44,6 @@
 #define UI_PEAK_X                  256
 
 #define UI_FIRST_USABLE_BIN        1U
-#define UI_LAST_USABLE_BIN         (FFT_BIN_COUNT - 1U)
-#define UI_FULL_VISIBLE_BINS       (UI_LAST_USABLE_BIN - UI_FIRST_USABLE_BIN + 1U)
 #define UI_MIN_VISIBLE_BINS        8U
 
 #define UI_DEFAULT_MAGNITUDE_MAX   1600U
@@ -113,6 +111,8 @@ static void ui_clamp_view(void);
 
 static int32_t ui_bin_to_x(uint32_t bin);
 static int32_t ui_magnitude_to_y(uint32_t magnitude);
+static uint32_t ui_last_usable_bin(void);
+static uint32_t ui_full_visible_bins(void);
 static uint32_t ui_last_visible_bin(void);
 static uint32_t ui_absolute_difference(uint16_t a, uint16_t b);
 
@@ -126,7 +126,7 @@ void UI_Init(void)
     ui.controls_dirty = true;
 
     ui.first_bin = UI_FIRST_USABLE_BIN;
-    ui.visible_bins = UI_FULL_VISIBLE_BINS;
+    ui.visible_bins = ui_full_visible_bins();
     ui.magnitude_max = UI_DEFAULT_MAGNITUDE_MAX;
 
     ui.touch_start_x = 0U;
@@ -255,6 +255,15 @@ void UI_FullSpan(void)
 {
     ui_apply_full_span();
     ui.graph_dirty = true;
+}
+
+void UI_OnFFTConfigurationChanged(void)
+{
+    ui.first_bin = UI_FIRST_USABLE_BIN;
+    ui.visible_bins = ui_full_visible_bins();
+    ui_clamp_view();
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
 }
 
 void UI_ZoomIn(void)
@@ -450,11 +459,11 @@ static void ui_draw_status(void)
 
     view_x0 = (int32_t)(((first_bin - UI_FIRST_USABLE_BIN) *
                          (DISPLAY_WIDTH - 1U)) /
-                        (UI_FULL_VISIBLE_BINS - 1U));
+                        (ui_full_visible_bins() - 1U));
 
     view_x1 = (int32_t)(((last_bin - UI_FIRST_USABLE_BIN) *
                          (DISPLAY_WIDTH - 1U)) /
-                        (UI_FULL_VISIBLE_BINS - 1U));
+                        (ui_full_visible_bins() - 1U));
 
     Display_FillRect(view_x0,
                      UI_STATUS_TOP + 8,
@@ -467,12 +476,12 @@ static void ui_draw_status(void)
         uint32_t peak_bin = FFT_GetPeakBin();
 
         if ((peak_bin >= UI_FIRST_USABLE_BIN) &&
-            (peak_bin <= UI_LAST_USABLE_BIN))
+            (peak_bin <= ui_last_usable_bin()))
         {
             int32_t peak_x = (int32_t)(
                 ((peak_bin - UI_FIRST_USABLE_BIN) *
                  (DISPLAY_WIDTH - 1U)) /
-                (UI_FULL_VISIBLE_BINS - 1U));
+                (ui_full_visible_bins() - 1U));
 
             Display_FillRect(peak_x - 1,
                              UI_STATUS_TOP + 5,
@@ -627,7 +636,7 @@ static void ui_pan_pixels(int32_t pixel_delta)
     int32_t bin_delta;
     int32_t new_first_bin;
 
-    if (ui.visible_bins >= UI_FULL_VISIBLE_BINS)
+    if (ui.visible_bins >= ui_full_visible_bins())
     {
         ui.first_bin = UI_FIRST_USABLE_BIN;
         return;
@@ -693,7 +702,7 @@ static void ui_scale_pixels(int32_t pixel_delta)
 static void ui_apply_full_span(void)
 {
     ui.first_bin = UI_FIRST_USABLE_BIN;
-    ui.visible_bins = UI_FULL_VISIBLE_BINS;
+    ui.visible_bins = ui_full_visible_bins();
     ui.magnitude_max = UI_DEFAULT_MAGNITUDE_MAX;
     ui_clamp_view();
     ui.controls_dirty = true;
@@ -737,7 +746,7 @@ static void ui_zoom_out(void)
     uint32_t center_bin;
     uint32_t new_visible_bins;
 
-    if (ui.visible_bins >= UI_FULL_VISIBLE_BINS)
+    if (ui.visible_bins >= ui_full_visible_bins())
     {
         ui_apply_full_span();
         return;
@@ -746,9 +755,9 @@ static void ui_zoom_out(void)
     center_bin = ui.first_bin + ((ui.visible_bins - 1U) / 2U);
     new_visible_bins = ui.visible_bins * 2U;
 
-    if (new_visible_bins > UI_FULL_VISIBLE_BINS)
+    if (new_visible_bins > ui_full_visible_bins())
     {
-        new_visible_bins = UI_FULL_VISIBLE_BINS;
+        new_visible_bins = ui_full_visible_bins();
     }
 
     ui.visible_bins = new_visible_bins;
@@ -801,9 +810,9 @@ static void ui_clamp_view(void)
         ui.visible_bins = UI_MIN_VISIBLE_BINS;
     }
 
-    if (ui.visible_bins > UI_FULL_VISIBLE_BINS)
+    if (ui.visible_bins > ui_full_visible_bins())
     {
-        ui.visible_bins = UI_FULL_VISIBLE_BINS;
+        ui.visible_bins = ui_full_visible_bins();
     }
 
     if (ui.first_bin < UI_FIRST_USABLE_BIN)
@@ -811,7 +820,7 @@ static void ui_clamp_view(void)
         ui.first_bin = UI_FIRST_USABLE_BIN;
     }
 
-    maximum_first_bin = UI_LAST_USABLE_BIN - ui.visible_bins + 1U;
+    maximum_first_bin = ui_last_usable_bin() - ui.visible_bins + 1U;
 
     if (ui.first_bin > maximum_first_bin)
     {
@@ -856,13 +865,30 @@ static int32_t ui_magnitude_to_y(uint32_t magnitude)
                      ui.magnitude_max);
 }
 
+static uint32_t ui_last_usable_bin(void)
+{
+    uint32_t bin_count = FFT_GetBinCount();
+
+    if (bin_count <= UI_FIRST_USABLE_BIN)
+    {
+        return UI_FIRST_USABLE_BIN;
+    }
+
+    return bin_count - 1U;
+}
+
+static uint32_t ui_full_visible_bins(void)
+{
+    return ui_last_usable_bin() - UI_FIRST_USABLE_BIN + 1U;
+}
+
 static uint32_t ui_last_visible_bin(void)
 {
     uint32_t last_bin = ui.first_bin + ui.visible_bins - 1U;
 
-    if (last_bin > UI_LAST_USABLE_BIN)
+    if (last_bin > ui_last_usable_bin())
     {
-        last_bin = UI_LAST_USABLE_BIN;
+        last_bin = ui_last_usable_bin();
     }
 
     return last_bin;
