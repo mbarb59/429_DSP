@@ -40,6 +40,7 @@ static void Console_ProcessCommand(char *command);
 static void Console_PrintPrompt(void);
 static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
+static void Console_PrintAnalyzerConfig(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
@@ -243,6 +244,10 @@ static void Console_ProcessCommand(char *command)
     else if (strcmp(command, "status") == 0)
     {
         Console_PrintStatus();
+    }
+    else if (strcmp(command, "config") == 0)
+    {
+        Console_PrintAnalyzerConfig();
     }
     else if (strcmp(command, "adc") == 0)
     {
@@ -693,6 +698,7 @@ static void Console_PrintHelp(void)
         "help        - Show command list\r\n"
         "version     - Show firmware version\r\n"
         "status      - Show system status\r\n"
+        "config      - Show analyzer configuration\r\n"
         "adc         - Read ADC1 channel 0 on PA0\r\n"
         "capture     - CPU-polled capture\r\n"
         "capturedma  - TIM2-triggered DMA capture\r\n"
@@ -739,6 +745,77 @@ static void Console_PrintStatus(void)
     UART_SendString("SDRAM: OK\r\n");
     UART_SendString("Display: OK\r\n");
     UART_SendString("ADC Input: ADC1 channel 0, PA0\r\n");
+}
+
+static void Console_PrintAnalyzerConfig(void)
+{
+    uint32_t rate_hz = Capture_GetSampleRate();
+    uint32_t capture_count = Capture_GetSampleCount();
+    uint32_t fft_size = FFT_GetSize();
+    uint32_t bin_count = FFT_GetBinCount();
+    uint64_t bin_width_millihz = 0U;
+    uint64_t capture_time_microseconds = 0U;
+
+    if (fft_size != 0U)
+    {
+        bin_width_millihz =
+            ((uint64_t)rate_hz * 1000U) / fft_size;
+    }
+
+    if (rate_hz != 0U)
+    {
+        capture_time_microseconds =
+            ((uint64_t)capture_count * 1000000U) / rate_hz;
+    }
+
+    UART_SendString("Analyzer Configuration\r\n");
+    UART_SendString("----------------------\r\n");
+
+    UART_SendString("Sample Rate     = ");
+    UART_SendDec(rate_hz);
+    UART_SendString(" SPS\r\n");
+
+    UART_SendString("Capture Samples = ");
+    UART_SendDec(capture_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("FFT Size        = ");
+    UART_SendDec(fft_size);
+    UART_SendString("\r\n");
+
+    UART_SendString("FFT Bins        = ");
+    UART_SendDec(bin_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("Bin Width       = ");
+    UART_SendDec((uint32_t)(bin_width_millihz / 1000U));
+    UART_SendChar('.');
+    UART_SendDec((uint32_t)(bin_width_millihz % 1000U));
+    UART_SendString(" Hz\r\n");
+
+    UART_SendString("Capture Time    = ");
+    UART_SendDec((uint32_t)(capture_time_microseconds / 1000U));
+    UART_SendChar('.');
+    UART_SendDec((uint32_t)(capture_time_microseconds % 1000U));
+    UART_SendString(" ms\r\n");
+
+    UART_SendString("Maximum Freq    = ");
+    UART_SendDec(rate_hz / 2U);
+    UART_SendString(" Hz\r\n");
+
+    UART_SendString("Continuous Run  = ");
+    UART_SendString(UI_IsRunning() ? "YES\r\n" : "NO\r\n");
+
+    UART_SendString("Configuration   = ");
+
+    if (capture_count == fft_size)
+    {
+        UART_SendString("MATCHED\r\n");
+    }
+    else
+    {
+        UART_SendString("ERROR: SIZE MISMATCH\r\n");
+    }
 }
 
 static void Console_RunDmaCapture(void)
