@@ -257,12 +257,26 @@ static void Console_ProcessCommand(char *command)
             Console_PrintAnalyzerConfig();
         }
     }
+    else if (strcmp(command, "fft1024") == 0)
+    {
+        if (Analyzer_SetFFTSize(1024U))
+        {
+            Console_PrintAnalyzerConfig();
+        }
+    }
+    else if (strcmp(command, "fft2048") == 0)
+    {
+        if (Analyzer_SetFFTSize(2048U))
+        {
+            Console_PrintAnalyzerConfig();
+        }
+    }
     else if (strcmp(command, "adc") == 0)
     {
         UART_SendString("ADC1 = ");
         UART_SendDec((uint32_t)ADC_Read());
         UART_SendString("\r\n");
-    }
+    } 
     else if (strcmp(command, "capture") == 0)
     {
         Capture_Samples();
@@ -708,6 +722,8 @@ static void Console_PrintHelp(void)
         "status      - Show system status\r\n"
         "config      - Show analyzer configuration\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
+        "fft1024     - Set capture and FFT size to 1024\r\n"
+        "fft2048     - Set capture and FFT size to 2048\r\n"
         "adc         - Read ADC1 channel 0 on PA0\r\n"
         "capture     - CPU-polled capture\r\n"
         "capturedma  - TIM2-triggered DMA capture\r\n"
