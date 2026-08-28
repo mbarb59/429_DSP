@@ -33,6 +33,7 @@
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
+static bool Analyzer_SetFFTSize(uint32_t fft_size);
 static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
 static void Console_Poll(void);
@@ -248,6 +249,13 @@ static void Console_ProcessCommand(char *command)
     else if (strcmp(command, "config") == 0)
     {
         Console_PrintAnalyzerConfig();
+    }
+    else if (strcmp(command, "fft512") == 0)
+    {
+        if (Analyzer_SetFFTSize(512U))
+        {
+            Console_PrintAnalyzerConfig();
+        }
     }
     else if (strcmp(command, "adc") == 0)
     {
@@ -699,6 +707,7 @@ static void Console_PrintHelp(void)
         "version     - Show firmware version\r\n"
         "status      - Show system status\r\n"
         "config      - Show analyzer configuration\r\n"
+        "fft512      - Set capture and FFT size to 512\r\n"
         "adc         - Read ADC1 channel 0 on PA0\r\n"
         "capture     - CPU-polled capture\r\n"
         "capturedma  - TIM2-triggered DMA capture\r\n"
@@ -1348,6 +1357,53 @@ static void Spectrum_Draw(void)
         FFT_GetPeakFrequency());
 }
 
+}
+
+static bool Analyzer_SetFFTSize(uint32_t fft_size)
+{
+    uint32_t previous_capture_count;
+    uint32_t previous_fft_size;
+
+    if (UI_IsRunning())
+    {
+        UART_SendString("Stop continuous analyzer first\r\n");
+        return false;
+    }
+
+    if (!Capture_IsValidSampleCount(fft_size) ||
+        !FFT_IsValidSize(fft_size))
+    {
+        UART_SendString("Unsupported FFT size\r\n");
+        return false;
+    }
+
+    previous_capture_count = Capture_GetSampleCount();
+    previous_fft_size = FFT_GetSize();
+
+    if (!Capture_SetSampleCount(fft_size))
+    {
+        UART_SendString("Capture size change failed\r\n");
+        return false;
+    }
+
+    if (!FFT_SetSize(fft_size))
+    {
+        (void)Capture_SetSampleCount(previous_capture_count);
+        (void)FFT_SetSize(previous_fft_size);
+        UART_SendString("FFT size change failed\r\n");
+        return false;
+    }
+
+    sampleCount = 0U;
+    captureComplete = 1;
+    FFT_Invalidate();
+    UI_OnFFTConfigurationChanged();
+
+    UART_SendString("Capture and FFT size set to ");
+    UART_SendDec(fft_size);
+    UART_SendString("\r\n");
+
+    return true;
 }
 
 static void Analyzer_Process(void)
