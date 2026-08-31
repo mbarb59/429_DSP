@@ -12,6 +12,7 @@
 #include "i2c3.h"
 #include "stmpe811.h"
 #include "ui.h"
+#include "sd_spi.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -33,6 +34,7 @@
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
+static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
 static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
@@ -42,6 +44,7 @@ static void Console_PrintPrompt(void);
 static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
 static void Console_PrintAnalyzerConfig(void);
+static void Console_PrintSdSpiStatus(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
@@ -250,6 +253,17 @@ static void Console_ProcessCommand(char *command)
     {
         Console_PrintAnalyzerConfig();
     }
+    else if (strcmp(command, "sdspi") == 0)
+    {
+    Console_PrintSdSpiStatus();
+    }
+    else if (strcmp(command, "fft256") == 0)
+    {
+        if (Analyzer_SetFFTSize(256U))
+        {
+            Console_PrintAnalyzerConfig();
+        }
+    }
     else if (strcmp(command, "fft512") == 0)
     {
         if (Analyzer_SetFFTSize(512U))
@@ -276,7 +290,7 @@ static void Console_ProcessCommand(char *command)
         UART_SendString("ADC1 = ");
         UART_SendDec((uint32_t)ADC_Read());
         UART_SendString("\r\n");
-    } 
+    }
     else if (strcmp(command, "capture") == 0)
     {
         Capture_Samples();
@@ -307,7 +321,9 @@ static void Console_ProcessCommand(char *command)
         {
             UART_SendString("Synthetic signal generated\r\n");
             UART_SendString("Frequency = 1500 Hz\r\n");
-            UART_SendString("Samples = 256\r\n");
+            UART_SendString("Samples = ");
+            UART_SendDec(FFT_GetSize());
+            UART_SendString("\r\n");
         }
         else
         {
@@ -328,7 +344,7 @@ static void Console_ProcessCommand(char *command)
 
             UART_SendString("FFT complete\r\n");
             UART_SendString("FFT size = ");
-            UART_SendDec(FFT_SIZE);
+            UART_SendDec(FFT_GetSize());
             UART_SendString("\r\n");
             UART_SendString("Sample rate = ");
             UART_SendDec(FFT_GetSampleRate());
@@ -721,6 +737,8 @@ static void Console_PrintHelp(void)
         "version     - Show firmware version\r\n"
         "status      - Show system status\r\n"
         "config      - Show analyzer configuration\r\n"
+        "sdspi       - Initialize and test SD SPI transport\r\n"
+        "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
         "fft1024     - Set capture and FFT size to 1024\r\n"
         "fft2048     - Set capture and FFT size to 2048\r\n"
@@ -842,7 +860,105 @@ static void Console_PrintAnalyzerConfig(void)
         UART_SendString("ERROR: SIZE MISMATCH\r\n");
     }
 }
+static void Console_PrintSdSpiStatus(void)
+{
+    HAL_StatusTypeDef status;
+    uint8_t idle_byte = 0U;
 
+    UART_SendString("SD SPI Status\r\n");
+    UART_SendString("-------------\r\n");
+
+    UART_SendString("Peripheral    = SPI2\r\n");
+    UART_SendString("SCK           = PB13\r\n");
+    UART_SendString("MISO          = PB14\r\n");
+    UART_SendString("MOSI          = PB15\r\n");
+    UART_SendString("CS            = PA5\r\n");
+    UART_SendString("SPI Mode      = 0\r\n");
+
+    status = SD_SPI_Init();
+
+    UART_SendString("Initialized   = ");
+
+    if (status != HAL_OK)
+    {
+        UART_SendString("NO\r\n");
+        UART_SendString("Init Status   = ");
+        UART_SendDec((uint32_t)status);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    UART_SendString("YES\r\n");
+    UART_SendString("PB14 Mode     = ");
+    UART_SendHex32(
+         (GPIOB->MODER >> (14U * 2U)) & 0x3U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 Pull     = ");
+    UART_SendHex32(
+        (GPIOB->PUPDR >> (14U * 2U)) & 0x3U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 AF       = ");
+    UART_SendHex32(
+        (GPIOB->AFR[1] >> ((14U - 8U) * 4U)) & 0xFU);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_14) != 0U) ? 1U : 0U);
+    UART_SendString("\r\n");
+    UART_SendString("Clock         = ");
+    UART_SendDec(SD_SPI_GetClockHz());
+    UART_SendString(" Hz\r\n");
+
+    UART_SendString("CS State      = ");
+    UART_SendString(
+        SD_SPI_IsDeselected() ? "HIGH\r\n" : "LOW\r\n");
+
+    status = SD_SPI_SendIdleClocks();
+
+    UART_SendString("Idle Clocks   = ");
+
+    if (status != HAL_OK)
+    {
+        UART_SendString("FAILED\r\n");
+        UART_SendString("Idle Status   = ");
+        UART_SendDec((uint32_t)status);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    UART_SendString("OK\r\n");
+
+    /*
+     * Keep the card deselected. This generates another eight clocks
+     * while observing the idle state of the MISO line.
+     */
+    SD_SPI_Deselect();
+    status = SD_SPI_ReadByte(&idle_byte);
+
+    UART_SendString("Idle Read     = ");
+
+    if (status != HAL_OK)
+    {
+        UART_SendString("FAILED\r\n");
+        UART_SendString("Read Status   = ");
+        UART_SendDec((uint32_t)status);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    UART_SendString("OK\r\n");
+
+    UART_SendString("Idle RX Byte  = ");
+    UART_SendHex32((uint32_t)idle_byte);
+    UART_SendString("\r\n");
+
+    UART_SendString("CS Final      = ");
+    UART_SendString(
+        SD_SPI_IsDeselected() ? "HIGH\r\n" : "LOW\r\n");
+}
 static void Console_RunDmaCapture(void)
 {
     uint32_t deadline;
@@ -881,13 +997,20 @@ static void Console_RunDmaCapture(void)
     UART_SendDec(dmaCaptureCycles);
     UART_SendString("\r\n");
 
-    UART_SendString("First Sample = ");
-    UART_SendDec(sampleBuffer[0]);
-    UART_SendString("\r\n");
+    if (sampleCount != 0U)
+    {
+        UART_SendString("First Sample = ");
+        UART_SendDec(sampleBuffer[0]);
+        UART_SendString("\r\n");
 
-    UART_SendString("Last Sample = ");
-    UART_SendDec(sampleBuffer[SAMPLE_COUNT - 1U]);
-    UART_SendString("\r\n");
+        UART_SendString("Last Sample = ");
+        UART_SendDec(sampleBuffer[sampleCount - 1U]);
+        UART_SendString("\r\n");
+    }
+    else
+    {
+        UART_SendString("Capture buffer is empty\r\n");
+    }
 }
 
 static void Console_RunMicStats(void)
@@ -1061,19 +1184,25 @@ static void FillRgbBars(volatile uint16_t *target)
 
 static int32_t Spectrum_BinToX(uint32_t bin)
 {
-    /* Bin 0 is DC. Map useful bins 1 through 127 across columns 0 through 239. */
+    uint32_t bin_count = FFT_GetBinCount();
+
+    if (bin_count <= 2U)
+    {
+        return 0;
+    }
+
     if (bin < 1U)
     {
         bin = 1U;
     }
 
-    if (bin >= FFT_BIN_COUNT)
+    if (bin >= bin_count)
     {
-        bin = FFT_BIN_COUNT - 1U;
+        bin = bin_count - 1U;
     }
 
     return (int32_t)(((bin - 1U) * (DISPLAY_WIDTH - 1U)) /
-                     (FFT_BIN_COUNT - 2U));
+                     (bin_count - 2U));
 }
 
 static void Spectrum_SetScale(uint32_t new_scale)
@@ -1117,7 +1246,9 @@ static void Spectrum_AutoScale(void)
         return;
     }
 
-    for (uint32_t bin = 1U; bin < FFT_BIN_COUNT; bin++)
+    for (uint32_t bin = 1U;
+         bin < FFT_GetBinCount();
+         bin++)
     {
         uint32_t magnitude = FFT_GetMagnitude(bin);
 
@@ -1323,7 +1454,9 @@ static void Spectrum_Draw(void)
     }
 
     /* Connect adjacent useful FFT bins to form a continuous spectrum trace. */
-    for (uint32_t bin = 2U; bin < FFT_BIN_COUNT; bin++)
+    for (uint32_t bin = 2U;
+        bin < FFT_GetBinCount();
+        bin++)
     {
         int32_t x0 = Spectrum_BinToX(bin - 1U);
         int32_t x1 = Spectrum_BinToX(bin);
@@ -1375,14 +1508,29 @@ static void Spectrum_Draw(void)
 
 }
 
+static bool Analyzer_RequireStopped(void)
+{
+    if (UI_IsRunning())
+    {
+        UART_SendString("Stop continuous analyzer first\r\n");
+        return false;
+    }
+
+    if (analyzer_state != ANALYZER_STOPPED)
+    {
+        UART_SendString("Analyzer capture is still active\r\n");
+        return false;
+    }
+
+    return true;
+}
 static bool Analyzer_SetFFTSize(uint32_t fft_size)
 {
     uint32_t previous_capture_count;
     uint32_t previous_fft_size;
 
-    if (UI_IsRunning())
+    if (!Analyzer_RequireStopped())
     {
-        UART_SendString("Stop continuous analyzer first\r\n");
         return false;
     }
 
@@ -1409,6 +1557,9 @@ static bool Analyzer_SetFFTSize(uint32_t fft_size)
         UART_SendString("FFT size change failed\r\n");
         return false;
     }
+
+    analyzer_state = ANALYZER_STOPPED;
+    analyzer_last_display_ms = HAL_GetTick();
 
     sampleCount = 0U;
     captureComplete = 1;
@@ -1437,6 +1588,16 @@ static void Analyzer_Process(void)
             break;
 
         case ANALYZER_START_CAPTURE:
+            if (Capture_GetSampleCount() != FFT_GetSize())
+            {
+                analyzer_error_count++;
+                UI_SetRunning(false);
+                analyzer_state = ANALYZER_STOPPED;
+                UART_SendString(
+                    "Continuous analyzer size mismatch\r\n");
+                break;
+            }
+
             DMA_CaptureSamples();
             analyzer_state = ANALYZER_WAIT_CAPTURE;
             break;
