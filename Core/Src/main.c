@@ -1095,18 +1095,15 @@ static void SD_SoftwareDelay(void)
         __NOP();
     }
 }
+
 static uint8_t SD_SoftwareTransferByte(uint8_t transmit_byte)
 {
     uint8_t receive_byte = 0U;
 
     for (uint32_t bit = 0U; bit < 8U; bit++)
     {
-        /*
-         * SPI Mode 0:
-         * Prepare MOSI while SCK is low.
-         */
-        GPIOB->BSRR =
-            (uint32_t)GPIO_PIN_13 << 16U;
+        /* SPI Mode 0: prepare MOSI while SCK is low. */
+        GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
 
         if ((transmit_byte & 0x80U) != 0U)
         {
@@ -1114,27 +1111,14 @@ static uint8_t SD_SoftwareTransferByte(uint8_t transmit_byte)
         }
         else
         {
-            GPIOB->BSRR =
-                (uint32_t)GPIO_PIN_15 << 16U;
+            GPIOB->BSRR = (uint32_t)GPIO_PIN_15 << 16U;
         }
 
         transmit_byte <<= 1U;
-
-        /*
-         * MOSI setup time before the rising edge.
-         */
         SD_SoftwareDelay();
 
-        /*
-         * Rising edge. SD cards sample DI and present valid DO
-         * data relative to this edge in SPI Mode 0.
-         */
+        /* Rising edge and a short propagation allowance. */
         GPIOB->BSRR = GPIO_PIN_13;
-
-        /*
-         * Allow a short input propagation delay, but do not wait
-         * for the entire long software delay before sampling.
-         */
         __NOP();
         __NOP();
         __NOP();
@@ -1145,31 +1129,19 @@ static uint8_t SD_SoftwareTransferByte(uint8_t transmit_byte)
         __NOP();
 
         receive_byte <<= 1U;
-
         if ((GPIOB->IDR & GPIO_PIN_14) != 0U)
         {
             receive_byte |= 0x01U;
         }
 
-        /*
-         * Hold the high phase after sampling.
-         */
         SD_SoftwareDelay();
-
-        /*
-         * Falling edge.
-         */
-        GPIOB->BSRR =
-            (uint32_t)GPIO_PIN_13 << 16U;
-
-        /*
-         * Hold the low phase before the next bit.
-         */
+        GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
         SD_SoftwareDelay();
     }
 
     return receive_byte;
 }
+
 static void Console_RunSdSoftwareLoopback(void)
 {
     static const uint8_t patterns[] =
@@ -1247,86 +1219,50 @@ static void Console_RunSdSoftwareCmd0(void)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    /*
-     * Disable hardware SPI2 before taking control of its pins.
-     */
     SPI2->CR1 &= ~SPI_CR1_SPE;
 
-    /*
-     * PA5 = chip select, initially high.
-     */
+    /* PA5 = CS, initially high. */
     GPIOA->BSRR = GPIO_PIN_5;
-
     gpio.Pin = GPIO_PIN_5;
     gpio.Mode = GPIO_MODE_OUTPUT_PP;
     gpio.Pull = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &gpio);
 
-    /*
-     * PB13 = clock, initially low.
-     * PB15 = MOSI, initially high.
-     */
-    GPIOB->BSRR =
-        (uint32_t)GPIO_PIN_13 << 16U;
-
+    /* PB13 = SCK low, PB15 = MOSI high. */
+    GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
     GPIOB->BSRR = GPIO_PIN_15;
-
     gpio.Pin = GPIO_PIN_13 | GPIO_PIN_15;
     gpio.Mode = GPIO_MODE_OUTPUT_PP;
     gpio.Pull = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &gpio);
 
-    /*
-     * PB14 = MISO input with pull-up.
-     */
+    /* PB14 = MISO with idle pull-up. */
     gpio.Pin = GPIO_PIN_14;
     gpio.Mode = GPIO_MODE_INPUT;
     gpio.Pull = GPIO_PULLUP;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &gpio);
 
-    /*
-     * Give the card power supply and controller time to stabilize.
-     * This must happen before interrupts are disabled because
-     * HAL_Delay() depends on SysTick.
-     */
     HAL_Delay(100U);
 
     primask = __get_PRIMASK();
     __disable_irq();
 
-    /*
-     * Card deselected, MOSI high.
-     * Ten 0xFF bytes produce 80 startup clocks.
-     */
+    /* CS high and MOSI high: provide 80 startup clocks. */
     GPIOA->BSRR = GPIO_PIN_5;
     GPIOB->BSRR = GPIO_PIN_15;
-
     for (uint32_t index = 0U; index < 10U; index++)
     {
         (void)SD_SoftwareTransferByte(0xFFU);
     }
 
-    /*
-     * Select the card.
-     */
-    GPIOA->BSRR =
-        (uint32_t)GPIO_PIN_5 << 16U;
-
-    /*
-     * Allow CS to settle before sending the command.
-     */
+    /* Select the card. Do not send an idle byte after CS goes low. */
+    GPIOA->BSRR = (uint32_t)GPIO_PIN_5 << 16U;
     SD_SoftwareDelay();
-    /*
-     * CMD0 packet:
-     *
-     * Command  = 0x40
-     * Argument = 0x00000000
-     * CRC      = 0x95
-     */
+
+    /* CMD0 = 40 00 00 00 00 95. */
     (void)SD_SoftwareTransferByte(0x40U);
     (void)SD_SoftwareTransferByte(0x00U);
     (void)SD_SoftwareTransferByte(0x00U);
@@ -1334,34 +1270,19 @@ static void Console_RunSdSoftwareCmd0(void)
     (void)SD_SoftwareTransferByte(0x00U);
     (void)SD_SoftwareTransferByte(0x95U);
 
-    /*
-     * Capture 16 complete response bytes without stopping early.
-     */
     for (uint32_t index = 0U; index < 16U; index++)
     {
-        response_bytes[index] =
-            SD_SoftwareTransferByte(0xFFU);
+        response_bytes[index] = SD_SoftwareTransferByte(0xFFU);
     }
 
-    /*
-     * Release the card and provide eight trailing clocks.
-     */
     GPIOA->BSRR = GPIO_PIN_5;
-
     (void)SD_SoftwareTransferByte(0xFFU);
 
-    /*
-     * Restore the previous interrupt state before using UART.
-     */
     if (primask == 0U)
     {
         __enable_irq();
     }
 
-    /*
-     * Search the captured bytes for the first valid R1 response.
-     * A valid R1 response has bit 7 cleared.
-     */
     for (uint32_t index = 0U; index < 16U; index++)
     {
         if ((response_bytes[index] & 0x80U) == 0U)
@@ -1373,19 +1294,16 @@ static void Console_RunSdSoftwareCmd0(void)
     }
 
     UART_SendString("Raw Response  = ");
-
     for (uint32_t index = 0U; index < 16U; index++)
     {
         UART_SendHex32((uint32_t)response_bytes[index]);
         UART_SendChar(' ');
     }
-
     UART_SendString("\r\n");
 
     UART_SendString("R1 Response   = ");
     UART_SendHex32((uint32_t)response);
     UART_SendString("\r\n");
-
     UART_SendString("Card State    = ");
 
     if (response_received && (response == 0x01U))
@@ -1401,50 +1319,9 @@ static void Console_RunSdSoftwareCmd0(void)
         UART_SendString("NO RESPONSE\r\n");
     }
 
-    /*
-     * Decode unexpected R1 responses for diagnostics.
-     */
-    if (response_received && (response != 0x01U))
-    {
-        if ((response & 0x01U) != 0U)
-        {
-            UART_SendString("R1 Detail     = CARD IDLE\r\n");
-        }
-
-        if ((response & 0x02U) != 0U)
-        {
-            UART_SendString("R1 Detail     = ERASE RESET\r\n");
-        }
-
-        if ((response & 0x04U) != 0U)
-        {
-            UART_SendString("R1 Detail     = ILLEGAL COMMAND\r\n");
-        }
-
-        if ((response & 0x08U) != 0U)
-        {
-            UART_SendString("R1 Detail     = CRC ERROR\r\n");
-        }
-
-        if ((response & 0x10U) != 0U)
-        {
-            UART_SendString("R1 Detail     = ERASE SEQUENCE ERROR\r\n");
-        }
-
-        if ((response & 0x20U) != 0U)
-        {
-            UART_SendString("R1 Detail     = ADDRESS ERROR\r\n");
-        }
-
-        if ((response & 0x40U) != 0U)
-        {
-            UART_SendString("R1 Detail     = PARAMETER ERROR\r\n");
-        }
-    }
-
-    UART_SendString(
-        "Reset board after software SPI test\r\n");
+    UART_SendString("Reset board after software SPI test\r\n");
 }
+
 static void Console_RunSdCsTest(void)
 {
     GPIO_InitTypeDef gpio = {0};
