@@ -13,6 +13,7 @@
 #include "stmpe811.h"
 #include "ui.h"
 #include "sd_spi.h"
+#include "sd_card.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -47,8 +48,8 @@ static void Console_PrintAnalyzerConfig(void);
 static void Console_PrintSdSpiStatus(void);
 static void Console_RunSdSoftwareCmd0(void);
 static void Console_RunSdSoftwareCmd8(void);
-static void Console_RunSdSoftwareLoopback(void);
 static void Console_RunSdCmd0(void);
+static void Console_RunSdSoftwareCmd58(void);
 static void Console_RunSdCsTest(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
@@ -283,9 +284,12 @@ static void Console_ProcessCommand(char *command)
         Console_RunSdSoftwareCmd8();
     }
     }
-    else if (strcmp(command, "sdbitloop") == 0)
+    else if (strcmp(command, "sdbitcmd58") == 0)
     {
-        Console_RunSdSoftwareLoopback();
+    if (Analyzer_RequireStopped())
+    {
+        Console_RunSdSoftwareCmd58();
+    }
     }
     else if (strcmp(command, "sdcs") == 0)
     {
@@ -775,6 +779,7 @@ static void Console_PrintHelp(void)
         "sdcmd0      - Reset SD card into SPI idle state\r\n"
 	"sdbitcmd0  - Test CMD0 using software SPI\r\n"
 	"sdbitcmd8  - Send CMD0 then CMD8 using software SPI\r\n"
+	"sdbitcmd58 - Send CMD0 then CMD58 using software SPI\r\n"
 	"sdcs        - Hold SD chip select low and high\r\n"
         "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
@@ -1086,242 +1091,36 @@ static void Console_RunSdCmd0(void)
     UART_SendString(
         SD_SPI_IsDeselected() ? "HIGH\r\n" : "LOW\r\n");
 }
-static void SD_SoftwareDelay(void)
-{
-    for (volatile uint32_t index = 0U;
-         index < 1200U;
-         index++)
-    {
-        __NOP();
-    }
-}
-
-static uint8_t SD_SoftwareTransferByte(uint8_t transmit_byte)
-{
-    uint8_t receive_byte = 0U;
-
-    for (uint32_t bit = 0U; bit < 8U; bit++)
-    {
-        /* SPI Mode 0: prepare MOSI while SCK is low. */
-        GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
-
-        if ((transmit_byte & 0x80U) != 0U)
-        {
-            GPIOB->BSRR = GPIO_PIN_15;
-        }
-        else
-        {
-            GPIOB->BSRR = (uint32_t)GPIO_PIN_15 << 16U;
-        }
-
-        transmit_byte <<= 1U;
-        SD_SoftwareDelay();
-
-        /* Rising edge and a short propagation allowance. */
-        GPIOB->BSRR = GPIO_PIN_13;
-        __NOP();
-        __NOP();
-        __NOP();
-        __NOP();
-        __NOP();
-        __NOP();
-        __NOP();
-        __NOP();
-
-        receive_byte <<= 1U;
-        if ((GPIOB->IDR & GPIO_PIN_14) != 0U)
-        {
-            receive_byte |= 0x01U;
-        }
-
-        SD_SoftwareDelay();
-        GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
-        SD_SoftwareDelay();
-    }
-
-    return receive_byte;
-}
-
-static void Console_RunSdSoftwareLoopback(void)
-{
-    static const uint8_t patterns[] =
-    {
-        0x00U,
-        0xFFU,
-        0x81U,
-        0x3CU,
-        0xA5U,
-        0x5AU
-    };
-
-    GPIO_InitTypeDef gpio = {0};
-    bool passed = true;
-
-    UART_SendString("Software SPI Loopback Test\r\n");
-    UART_SendString("--------------------------\r\n");
-
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    SPI2->CR1 &= ~SPI_CR1_SPE;
-
-    GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
-    GPIOB->BSRR = GPIO_PIN_15;
-
-    gpio.Pin = GPIO_PIN_13 | GPIO_PIN_15;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    gpio.Pin = GPIO_PIN_14;
-    gpio.Mode = GPIO_MODE_INPUT;
-    gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    for (uint32_t index = 0U;
-         index < (uint32_t)sizeof(patterns);
-         index++)
-    {
-        uint8_t received =
-            SD_SoftwareTransferByte(patterns[index]);
-
-        UART_SendString("TX = ");
-        UART_SendHex32((uint32_t)patterns[index]);
-        UART_SendString(" RX = ");
-        UART_SendHex32((uint32_t)received);
-
-        if (received == patterns[index])
-        {
-            UART_SendString(" PASS\r\n");
-        }
-        else
-        {
-            UART_SendString(" FAIL\r\n");
-            passed = false;
-        }
-    }
-
-    UART_SendString("Software Loopback = ");
-    UART_SendString(passed ? "PASS\r\n" : "FAIL\r\n");
-    UART_SendString("Reset board after test\r\n");
-}
-
 static void Console_RunSdSoftwareCmd0(void)
 {
-    uint8_t response_bytes[16] = {0U};
-    GPIO_InitTypeDef gpio = {0};
-    uint8_t response = 0xFFU;
-    bool response_received = false;
-    uint32_t primask;
+    HAL_StatusTypeDef status;
+    uint8_t r1_response = 0xFFU;
 
     UART_SendString("Software SPI CMD0 Test\r\n");
     UART_SendString("----------------------\r\n");
 
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    SPI2->CR1 &= ~SPI_CR1_SPE;
+    status = SD_Card_Reset(&r1_response);
 
-    /* PA5 = CS, initially high. */
-    GPIOA->BSRR = GPIO_PIN_5;
-    gpio.Pin = GPIO_PIN_5;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &gpio);
-
-    /* PB13 = SCK low, PB15 = MOSI high. */
-    GPIOB->BSRR = (uint32_t)GPIO_PIN_13 << 16U;
-    GPIOB->BSRR = GPIO_PIN_15;
-    gpio.Pin = GPIO_PIN_13 | GPIO_PIN_15;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    /* PB14 = MISO with idle pull-up. */
-    gpio.Pin = GPIO_PIN_14;
-    gpio.Mode = GPIO_MODE_INPUT;
-    gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    HAL_Delay(100U);
-
-    primask = __get_PRIMASK();
-    __disable_irq();
-
-    /* CS high and MOSI high: provide 80 startup clocks. */
-    GPIOA->BSRR = GPIO_PIN_5;
-    GPIOB->BSRR = GPIO_PIN_15;
-    for (uint32_t index = 0U; index < 10U; index++)
-    {
-        (void)SD_SoftwareTransferByte(0xFFU);
-    }
-
-    /* Select the card. Do not send an idle byte after CS goes low. */
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_5 << 16U;
-    SD_SoftwareDelay();
-
-    /* CMD0 = 40 00 00 00 00 95. */
-    (void)SD_SoftwareTransferByte(0x40U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x95U);
-
-    for (uint32_t index = 0U; index < 16U; index++)
-    {
-        response_bytes[index] = SD_SoftwareTransferByte(0xFFU);
-    }
-
-    GPIOA->BSRR = GPIO_PIN_5;
-    (void)SD_SoftwareTransferByte(0xFFU);
-
-    if (primask == 0U)
-    {
-        __enable_irq();
-    }
-
-    for (uint32_t index = 0U; index < 16U; index++)
-    {
-        if ((response_bytes[index] & 0x80U) == 0U)
-        {
-            response = response_bytes[index];
-            response_received = true;
-            break;
-        }
-    }
-
-    UART_SendString("Raw Response  = ");
-    for (uint32_t index = 0U; index < 16U; index++)
-    {
-        UART_SendHex32((uint32_t)response_bytes[index]);
-        UART_SendChar(' ');
-    }
+    UART_SendString("HAL Status    = ");
+    UART_SendDec((uint32_t)status);
     UART_SendString("\r\n");
 
     UART_SendString("R1 Response   = ");
-    UART_SendHex32((uint32_t)response);
+    UART_SendHex32((uint32_t)r1_response);
     UART_SendString("\r\n");
+
     UART_SendString("Card State    = ");
 
-    if (response_received && (response == 0x01U))
+    if ((status == HAL_OK) &&
+        (r1_response == 0x01U))
     {
         UART_SendString("IDLE\r\n");
     }
-    else if (response_received)
-    {
-        UART_SendString("UNEXPECTED RESPONSE\r\n");
-    }
     else
     {
-        UART_SendString("NO RESPONSE\r\n");
+        UART_SendString("NOT IDLE\r\n");
     }
-
-    UART_SendString("Reset board after software SPI test\r\n");
 }
-
 static void Console_RunSdCsTest(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -1358,185 +1157,73 @@ static void Console_RunSdCsTest(void)
 }
 static void Console_RunSdSoftwareCmd8(void)
 {
-    GPIO_InitTypeDef gpio = {0};
-    uint8_t cmd0_response = 0xFFU;
-    uint8_t cmd8_response = 0xFFU;
-    uint8_t r7[4] = {0U};
-    uint32_t primask;
+    HAL_StatusTypeDef status;
+    uint8_t cmd0_r1 = 0xFFU;
+    uint8_t cmd8_r1 = 0xFFU;
+    uint32_t r7_response = 0U;
 
     UART_SendString("Software SPI CMD8 Test\r\n");
     UART_SendString("----------------------\r\n");
 
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    status = SD_Card_Reset(&cmd0_r1);
 
-    SPI2->CR1 &= ~SPI_CR1_SPE;
-
-    /*
-     * PA5 = CS, initially high.
-     */
-    GPIOA->BSRR = GPIO_PIN_5;
-
-    gpio.Pin = GPIO_PIN_5;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &gpio);
-
-    /*
-     * PB13 = SCK, initially low.
-     * PB15 = MOSI, initially high.
-     */
-    GPIOB->BSRR =
-        (uint32_t)GPIO_PIN_13 << 16U;
-    GPIOB->BSRR = GPIO_PIN_15;
-
-    gpio.Pin = GPIO_PIN_13 | GPIO_PIN_15;
-    gpio.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    /*
-     * PB14 = MISO.
-     */
-    gpio.Pin = GPIO_PIN_14;
-    gpio.Mode = GPIO_MODE_INPUT;
-    gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio);
-
-    HAL_Delay(100U);
-
-    primask = __get_PRIMASK();
-    __disable_irq();
-
-    /*
-     * Startup: CS high, MOSI high, 80 clocks.
-     */
-    GPIOA->BSRR = GPIO_PIN_5;
-    GPIOB->BSRR = GPIO_PIN_15;
-
-    for (uint32_t index = 0U; index < 10U; index++)
-    {
-        (void)SD_SoftwareTransferByte(0xFFU);
-    }
-
-    /*
-     * CMD0: 40 00 00 00 00 95.
-     */
-    GPIOA->BSRR =
-        (uint32_t)GPIO_PIN_5 << 16U;
-
-    SD_SoftwareDelay();
-
-    (void)SD_SoftwareTransferByte(0x40U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x95U);
-
-    for (uint32_t attempt = 0U; attempt < 64U; attempt++)
-    {
-        cmd0_response =
-            SD_SoftwareTransferByte(0xFFU);
-
-        if ((cmd0_response & 0x80U) == 0U)
-        {
-            break;
-        }
-    }
-
-    /*
-     * Release CMD0 transaction.
-     */
-    GPIOA->BSRR = GPIO_PIN_5;
-    (void)SD_SoftwareTransferByte(0xFFU);
-
-    /*
-     * CMD8: 48 00 00 01 AA 87.
-     */
-    GPIOA->BSRR =
-        (uint32_t)GPIO_PIN_5 << 16U;
-
-    SD_SoftwareDelay();
-
-    (void)SD_SoftwareTransferByte(0x48U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x00U);
-    (void)SD_SoftwareTransferByte(0x01U);
-    (void)SD_SoftwareTransferByte(0xAAU);
-    (void)SD_SoftwareTransferByte(0x87U);
-
-    for (uint32_t attempt = 0U; attempt < 64U; attempt++)
-    {
-        cmd8_response =
-            SD_SoftwareTransferByte(0xFFU);
-
-        if ((cmd8_response & 0x80U) == 0U)
-        {
-            break;
-        }
-    }
-
-    /*
-     * A legal CMD8 response is followed by four R7 bytes.
-     */
-    if ((cmd8_response & 0x04U) == 0U)
-    {
-        for (uint32_t index = 0U; index < 4U; index++)
-        {
-            r7[index] =
-                SD_SoftwareTransferByte(0xFFU);
-        }
-    }
-
-    GPIOA->BSRR = GPIO_PIN_5;
-    (void)SD_SoftwareTransferByte(0xFFU);
-
-    if (primask == 0U)
-    {
-        __enable_irq();
-    }
+    UART_SendString("CMD0 Status   = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
 
     UART_SendString("CMD0 R1       = ");
-    UART_SendHex32((uint32_t)cmd0_response);
+    UART_SendHex32((uint32_t)cmd0_r1);
+    UART_SendString("\r\n");
+
+    if ((status != HAL_OK) ||
+        (cmd0_r1 != 0x01U))
+    {
+        UART_SendString(
+            "CMD8 skipped because CMD0 failed\r\n");
+        return;
+    }
+
+    status = SD_Card_CheckInterface(
+        &cmd8_r1,
+        &r7_response);
+
+    UART_SendString("CMD8 Status   = ");
+    UART_SendDec((uint32_t)status);
     UART_SendString("\r\n");
 
     UART_SendString("CMD8 R1       = ");
-    UART_SendHex32((uint32_t)cmd8_response);
+    UART_SendHex32((uint32_t)cmd8_r1);
     UART_SendString("\r\n");
 
     UART_SendString("CMD8 R7       = ");
-
-    for (uint32_t index = 0U; index < 4U; index++)
-    {
-        UART_SendHex32((uint32_t)r7[index]);
-        UART_SendChar(' ');
-    }
-
+    UART_SendHex32(r7_response);
     UART_SendString("\r\n");
 
     UART_SendString("CMD8 Result   = ");
 
-    if ((cmd0_response == 0x01U) &&
-        (cmd8_response == 0x01U) &&
-        (r7[2] == 0x01U) &&
-        (r7[3] == 0xAAU))
-    {
-        UART_SendString("SD VERSION 2 CARD\r\n");
-    }
-    else if (cmd8_response == 0x05U)
-    {
-        UART_SendString("CMD8 NOT SUPPORTED\r\n");
-    }
-    else
-    {
-        UART_SendString("UNEXPECTED RESPONSE\r\n");
-    }
-
-    UART_SendString("Reset board after test\r\n");
+if (status == HAL_TIMEOUT)
+{
+    UART_SendString("NO RESPONSE\r\n");
+}
+else if (status != HAL_OK)
+{
+    UART_SendString("TRANSFER ERROR\r\n");
+}
+else if ((cmd8_r1 == 0x01U) &&
+         ((r7_response & 0x00000FFFU) ==
+          0x000001AAU))
+{
+    UART_SendString("SD VERSION 2 CARD\r\n");
+}
+else if ((cmd8_r1 & 0x04U) != 0U)
+{
+    UART_SendString(
+        "CMD8 NOT SUPPORTED, POSSIBLE VERSION 1 CARD\r\n");
+}
+else
+{
+    UART_SendString("UNEXPECTED RESPONSE\r\n");
+}
 }
 static void Console_RunDmaCapture(void)
 {
@@ -1591,7 +1278,64 @@ static void Console_RunDmaCapture(void)
         UART_SendString("Capture buffer is empty\r\n");
     }
 }
+static void Console_RunSdSoftwareCmd58(void)
+{
+    HAL_StatusTypeDef status;
+    uint8_t cmd0_r1 = 0xFFU;
+    uint8_t cmd58_r1 = 0xFFU;
+    uint32_t ocr = 0U;
 
+    UART_SendString("Software SPI CMD58 Test\r\n");
+    UART_SendString("-----------------------\r\n");
+
+    status = SD_Card_Reset(&cmd0_r1);
+
+    UART_SendString("CMD0 Status   = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD0 R1       = ");
+    UART_SendHex32((uint32_t)cmd0_r1);
+    UART_SendString("\r\n");
+
+    if ((status != HAL_OK) ||
+        (cmd0_r1 != 0x01U))
+    {
+        UART_SendString(
+            "CMD58 skipped because CMD0 failed\r\n");
+
+        return;
+    }
+
+    status = SD_Card_ReadOcr(
+        &cmd58_r1,
+        &ocr);
+
+    UART_SendString("CMD58 Status  = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD58 R1      = ");
+    UART_SendHex32((uint32_t)cmd58_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("OCR           = ");
+    UART_SendHex32(ocr);
+    UART_SendString("\r\n");
+
+    if (status == HAL_TIMEOUT)
+    {
+        UART_SendString("CMD58 Result  = NO RESPONSE\r\n");
+    }
+    else if (status != HAL_OK)
+    {
+        UART_SendString("CMD58 Result  = TRANSFER ERROR\r\n");
+    }
+    else
+    {
+        UART_SendString("CMD58 Result  = RESPONSE RECEIVED\r\n");
+    }
+}
 static void Console_RunMicStats(void)
 {
     uint32_t deadline;
