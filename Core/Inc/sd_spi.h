@@ -125,5 +125,27 @@ HAL_StatusTypeDef SD_SPI_SendIdleClocks(void);
  * Return the calculated SPI2 clock frequency in Hz.
  */
 uint32_t SD_SPI_GetClockHz(void);
+/*
+ * Send an SD command and return its one-byte R1 response.
+ *
+ * command:
+ *   SD command number without the 0x40 transmission prefix.
+ *
+ * argument:
+ *   32-bit command argument, transmitted most-significant byte first.
+ *
+ * crc:
+ *   Command CRC byte. CMD0 requires 0x95.
+ *
+ * r1_response:
+ *   Receives the card's R1 response.
+ *
+ * The function controls CS, waits for an R1 response, deselects the card,
+ * and sends one trailing 0xFF byte.
+ */
+  HAL_StatusTypeDef SD_SPI_SendCommand(uint8_t command,
+                                    uint32_t argument,
+                                    uint8_t crc,
+                                    uint8_t *r1_response);
 
 #endif /* SD_SPI_H */

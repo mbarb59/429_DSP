@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define SD_COMMAND_PREFIX       0x40U
+#define SD_RESPONSE_TIMEOUT     32U
+#define SD_IDLE_BYTE            0xFFU
+
 static bool sd_spi_initialized;
 
 static bool sd_spi_timeout_expired(uint32_t start_ms)
@@ -67,16 +71,18 @@ HAL_StatusTypeDef SD_SPI_Init(void)
 {
     GPIO_InitTypeDef gpio = {0};
 
-    if (sd_spi_initialized)
-    {
-        return HAL_OK;
-    }
+    /*
+     * Always reinitialize during bring-up so diagnostic commands
+     * cannot leave SPI2 or its GPIO pins in a stale configuration.
+     */
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_SPI2_CLK_ENABLE();
 
-    /* Preload CS high before changing PA5 to an output. */
+    /*
+     * Preload CS high before configuring PA5 as an output.
+     */
     SD_CS_GPIO_PORT->BSRR = SD_CS_PIN;
 
     gpio.Pin = SD_CS_PIN;
@@ -88,27 +94,30 @@ HAL_StatusTypeDef SD_SPI_Init(void)
     SD_SPI_Deselect();
 
     /*
-   Configure SCK and MOSI without pulls.
-   */
-   gpio.Pin = SD_SPI_SCK_PIN |
-           SD_SPI_MOSI_PIN;
-   gpio.Mode = GPIO_MODE_AF_PP;
-   gpio.Pull = GPIO_NOPULL;
-   gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-   gpio.Alternate = SD_SPI_GPIO_AF;
-   HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
+     * Configure SCK and MOSI as SPI2 alternate-function signals.
+     */
+    gpio.Pin = SD_SPI_SCK_PIN |
+               SD_SPI_MOSI_PIN;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = SD_SPI_GPIO_AF;
+    HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
 
-   /*
-      MISO is high-impedance while the card is deselected.
-      Enable a pull-up so the idle level is defined.
-   */
-   gpio.Pin = SD_SPI_MISO_PIN;
-   gpio.Mode = GPIO_MODE_AF_PP;
-   gpio.Pull = GPIO_PULLUP;
-   gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-   gpio.Alternate = SD_SPI_GPIO_AF;
-   HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
+    /*
+     * MISO is high-impedance while the card is deselected.
+     * Use a pull-up so the idle level is defined.
+     */
+    gpio.Pin = SD_SPI_MISO_PIN;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = SD_SPI_GPIO_AF;
+    HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
 
+    /*
+     * Reset SPI2 before programming its control registers.
+     */
     __HAL_RCC_SPI2_FORCE_RESET();
     __HAL_RCC_SPI2_RELEASE_RESET();
 
@@ -116,13 +125,27 @@ HAL_StatusTypeDef SD_SPI_Init(void)
     SD_SPI_INSTANCE->CR2 = 0U;
 
     /*
-     * SPI master, Mode 0, 8-bit, MSB first, software-controlled NSS.
-     * The initial divider is 256 for a conservative SD startup clock.
+     * SPI2 shares hardware with I2S2. Explicitly select SPI mode.
      */
-    SD_SPI_INSTANCE->CR1 = SPI_CR1_MSTR |
-                           SD_SPI_INIT_PRESCALER |
-                           SPI_CR1_SSM |
-                           SPI_CR1_SSI;
+    SD_SPI_INSTANCE->I2SCFGR = 0U;
+
+    /*
+     * Configure SPI2:
+     *
+     * Master mode
+     * Mode 0, CPOL = 0 and CPHA = 0
+     * 8-bit data
+     * MSB first
+     * Software-controlled NSS
+     * Divide-by-256 startup clock
+     */
+    SD_SPI_INSTANCE->CR1 =
+    SPI_CR1_MSTR |
+    SD_SPI_INIT_PRESCALER |
+    SPI_CR1_SSM |
+    SPI_CR1_SSI;
+
+
 
     sd_spi_clear_receive_state();
 
@@ -131,7 +154,6 @@ HAL_StatusTypeDef SD_SPI_Init(void)
 
     return HAL_OK;
 }
-
 bool SD_SPI_IsInitialized(void)
 {
     return sd_spi_initialized;
@@ -302,4 +324,117 @@ uint32_t SD_SPI_GetClockHz(void)
     }
 
     return peripheral_clock_hz / divider;
+}
+HAL_StatusTypeDef SD_SPI_SendCommand(uint8_t command,
+                                    uint32_t argument,
+                                    uint8_t crc,
+                                    uint8_t *r1_response)
+{
+    HAL_StatusTypeDef status;
+    uint8_t command_packet[6];
+    uint8_t response = SD_IDLE_BYTE;
+
+    if (!sd_spi_initialized || (r1_response == NULL))
+    {
+        return HAL_ERROR;
+    }
+
+    /*
+     * Default the caller's result to 0xFF. This makes the output
+     * meaningful even if transmission or response polling fails.
+     */
+    *r1_response = SD_IDLE_BYTE;
+
+    command_packet[0] =
+        (uint8_t)(SD_COMMAND_PREFIX | (command & 0x3FU));
+
+    command_packet[1] =
+        (uint8_t)((argument >> 24U) & 0xFFU);
+
+    command_packet[2] =
+        (uint8_t)((argument >> 16U) & 0xFFU);
+
+    command_packet[3] =
+        (uint8_t)((argument >> 8U) & 0xFFU);
+
+    command_packet[4] =
+        (uint8_t)(argument & 0xFFU);
+
+    command_packet[5] = crc;
+
+    /*
+     * Supply eight clocks while the card is deselected.
+     */
+    SD_SPI_Deselect();
+
+    status = SD_SPI_WriteByte(SD_IDLE_BYTE);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * Select the card and transmit the command packet immediately.
+     */
+    SD_SPI_Select();
+
+    status = SD_SPI_Transfer(
+        command_packet,
+        NULL,
+        (uint32_t)sizeof(command_packet));
+
+    if (status != HAL_OK)
+    {
+        SD_SPI_Deselect();
+        (void)SD_SPI_WriteByte(SD_IDLE_BYTE);
+        return status;
+    }
+
+    /*
+     * An R1 response has bit 7 cleared. The card may return one
+     * or more 0xFF bytes before returning its response.
+     */
+    for (uint32_t attempt = 0U;
+         attempt < SD_RESPONSE_TIMEOUT;
+         attempt++)
+    {
+        status = SD_SPI_ReadByte(&response);
+
+        if (status != HAL_OK)
+        {
+            SD_SPI_Deselect();
+            (void)SD_SPI_WriteByte(SD_IDLE_BYTE);
+            return status;
+        }
+
+        if ((response & 0x80U) == 0U)
+        {
+            *r1_response = response;
+
+            SD_SPI_Deselect();
+
+            /*
+             * Supply eight trailing clocks after releasing CS.
+             */
+            status = SD_SPI_WriteByte(SD_IDLE_BYTE);
+
+            if (status != HAL_OK)
+            {
+                return status;
+            }
+
+            return HAL_OK;
+        }
+    }
+
+    /*
+     * Preserve the final received byte for diagnostics.
+     */
+    *r1_response = response;
+
+    SD_SPI_Deselect();
+    (void)SD_SPI_WriteByte(SD_IDLE_BYTE);
+
+    return HAL_TIMEOUT;
 }
