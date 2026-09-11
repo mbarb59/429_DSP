@@ -15,6 +15,7 @@
 #include "sd_spi.h"
 #include "sd_card.h"
 #include "storage_framework.h"
+#include "filesystem_service.h"
 #include "recorder_framework.h"
 #include "file_manager_framework.h"
 #include "sd_raw_test.h"
@@ -57,6 +58,14 @@ static void Console_RunSdSoftwareCmd58(void);
 static void Console_RunSdCsTest(void);
 static void Console_RunSdInit(void);
 static void Console_RunSdReadZero(void);
+static void Console_PrintFsResult(
+    const char *operation,
+    FRESULT result);
+static void Console_RunFsMount(void);
+static void Console_RunFsList(void);
+static void Console_RunFsFree(void);
+static void Console_RunFsFileTest(void);
+static void Console_RunFsUnmount(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
@@ -343,6 +352,41 @@ else if (strcmp(command, "sdread0") == 0)
         if (Analyzer_RequireStopped())
         {
             Console_RunSdReadZero();
+        }
+    }
+    else if (strcmp(command, "sdmount") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunFsMount();
+        }
+    }
+    else if (strcmp(command, "sdls") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunFsList();
+        }
+    }
+    else if (strcmp(command, "sdfree") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunFsFree();
+        }
+    }
+    else if (strcmp(command, "sdfiletest") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunFsFileTest();
+        }
+    }
+    else if (strcmp(command, "sdunmount") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunFsUnmount();
         }
     }
     else if (strcmp(command, "fft256") == 0)
@@ -1741,6 +1785,92 @@ static void Console_RunSdReadZero(void)
     UART_SendString("\r\n");
     UART_SendString("Result          = PASS\r\n");
 }
+static void Console_PrintFsResult(
+    const char *operation,
+    FRESULT result)
+{
+    UART_SendString(operation);
+    UART_SendString(" = ");
+    UART_SendDec((uint32_t)result);
+
+    if (result == FR_OK)
+    {
+        UART_SendString("  PASS\r\n");
+    }
+    else
+    {
+        UART_SendString("  FAIL\r\n");
+    }
+}
+
+static void Console_RunFsMount(void)
+{
+    FRESULT result;
+
+    UART_SendString("FAT Filesystem Mount\r\n");
+    UART_SendString("--------------------\r\n");
+
+    result = FileSystem_Mount();
+    Console_PrintFsResult("Mount Result", result);
+}
+
+static void Console_RunFsList(void)
+{
+    FRESULT result;
+
+    UART_SendString("FAT Root Directory\r\n");
+    UART_SendString("------------------\r\n");
+
+    result = FileSystem_ListRoot();
+    Console_PrintFsResult("List Result", result);
+}
+
+static void Console_RunFsFree(void)
+{
+    uint32_t total_kib = 0U;
+    uint32_t free_kib = 0U;
+    FRESULT result;
+
+    UART_SendString("FAT Filesystem Space\r\n");
+    UART_SendString("--------------------\r\n");
+
+    result = FileSystem_GetSpace(&total_kib, &free_kib);
+    Console_PrintFsResult("Space Result", result);
+
+    if (result == FR_OK)
+    {
+        UART_SendString("Total KiB    = ");
+        UART_SendDec(total_kib);
+        UART_SendString("\r\n");
+        UART_SendString("Free KiB     = ");
+        UART_SendDec(free_kib);
+        UART_SendString("\r\n");
+    }
+}
+
+static void Console_RunFsFileTest(void)
+{
+    FRESULT result;
+
+    UART_SendString("FAT Verified File Test\r\n");
+    UART_SendString("----------------------\r\n");
+    UART_SendString("File          = STM32.TXT\r\n");
+
+    result = FileSystem_VerifiedFileTest();
+    Console_PrintFsResult("File Test", result);
+}
+
+static void Console_RunFsUnmount(void)
+{
+    FRESULT result;
+
+    UART_SendString("FAT Filesystem Unmount\r\n");
+    UART_SendString("----------------------\r\n");
+
+    result = FileSystem_Unmount();
+    Console_PrintFsResult("Unmount Result", result);
+}
+
 static void Console_RunSdInit(void)
 {
     HAL_StatusTypeDef status;
