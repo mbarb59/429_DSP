@@ -14,6 +14,9 @@
 #include "ui.h"
 #include "sd_spi.h"
 #include "sd_card.h"
+#include "storage_framework.h"
+#include "recorder_framework.h"
+#include "file_manager_framework.h"
 #include "sd_raw_test.h"
 
 #include <stdint.h>
@@ -53,6 +56,7 @@ static void Console_RunSdCmd0(void);
 static void Console_RunSdSoftwareCmd58(void);
 static void Console_RunSdCsTest(void);
 static void Console_RunSdInit(void);
+static void Console_RunSdReadZero(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
@@ -200,6 +204,8 @@ UART_SendString("LTDC INIT...\r\n");
     UART_SendString("ADC/DMA OK\r\n");
     UI_Init();
     UART_SendString("UI OK\r\n");
+    Recorder_FrameworkInit();
+    FileManager_FrameworkInit();
 
     UART_SendString("Type help for commands.\r\n");
     Console_PrintPrompt();
@@ -209,6 +215,7 @@ UART_SendString("LTDC INIT...\r\n");
         Console_Poll();
         UI_ProcessTouch();
         Analyzer_Process();
+        Recorder_Process();
     }
 }
 
@@ -331,7 +338,14 @@ else if (strcmp(command, "sdinit") == 0)
         Console_RunSdInit();
     }
 }
-else if (strcmp(command, "fft256") == 0)
+else if (strcmp(command, "sdread0") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunSdReadZero();
+        }
+    }
+    else if (strcmp(command, "fft256") == 0)
 {
     if (Analyzer_SetFFTSize(256U))
     {
@@ -1615,6 +1629,54 @@ static void Console_RunSdSoftwareCmd58(void)
         UART_SendString("CMD58 Result  = RESPONSE RECEIVED\r\n");
     }
 }
+static void Console_RunSdReadZero(void)
+{
+    uint8_t preview[STORAGE_SECTOR0_PREVIEW_BYTES];
+    HAL_StatusTypeDef status;
+
+    UART_SendString("SD Sector 0 Read Test\r\n");
+    UART_SendString("---------------------\r\n");
+
+    status = Storage_ReadSectorZeroPreview(
+        preview,
+        sizeof(preview));
+
+    UART_SendString("HAL Status = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    if (status != HAL_OK)
+    {
+        UART_SendString("Result     = FAIL\r\n");
+        return;
+    }
+
+    for (uint32_t offset = 0U;
+         offset < sizeof(preview);
+         offset += 16U)
+    {
+        UART_SendHex32(offset);
+        UART_SendString(": ");
+
+        for (uint32_t index = 0U; index < 16U; index++)
+        {
+            uint8_t value = preview[offset + index];
+
+            if (value < 0x10U)
+            {
+                UART_SendChar('0');
+            }
+
+            UART_SendHex32((uint32_t)value);
+            UART_SendChar(' ');
+        }
+
+        UART_SendString("\r\n");
+    }
+
+    UART_SendString("Result     = PASS\r\n");
+}
+
 static void Console_RunSdInit(void)
 {
     HAL_StatusTypeDef status;

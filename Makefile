@@ -37,6 +37,11 @@ Core/Src/i2c3.c \
 Core/Src/stmpe811.c \
 Core/Src/ui.c \
 Core/Src/sd_spi.c \
+Core/Src/sd_card.c \
+Core/Src/storage_framework.c \
+Core/Src/recorder_framework.c \
+Core/Src/file_manager_framework.c \
+Core/Src/sd_raw_test.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \
@@ -63,7 +68,7 @@ $(C_INCLUDES) \
 -Wall \
 -g
 
-LDFLAGS = \
+LDFLAGS = -Wl,-Map=build/429_DSP.map,--cref \
 $(MCU) \
 -TLinker/STM32F429ZITX_FLASH.ld\
 -Wl,-Map=build/$(TARGET).map \
