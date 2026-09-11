@@ -89,6 +89,18 @@ void UART_Flush(void)
     }
 }
 
+void UART_SendHex8(uint8_t value)
+{
+    static const char hex_digits[] =
+        "0123456789ABCDEF";
+
+    UART_SendChar(
+        hex_digits[(value >> 4U) & 0x0FU]);
+
+    UART_SendChar(
+        hex_digits[value & 0x0FU]);
+}
+
 void UART_SendHex32(uint32_t value)
 {
     static const char hex[] = "0123456789ABCDEF";

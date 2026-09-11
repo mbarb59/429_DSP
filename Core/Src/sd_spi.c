@@ -97,12 +97,19 @@ HAL_StatusTypeDef SD_SPI_Init(void)
      * Configure SCK and MOSI as SPI2 alternate-function signals.
      */
     gpio.Pin = SD_SPI_SCK_PIN |
-               SD_SPI_MOSI_PIN;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gpio.Alternate = SD_SPI_GPIO_AF;
-    HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
+           SD_SPI_MOSI_PIN;
+gpio.Mode = GPIO_MODE_AF_PP;
+gpio.Pull = GPIO_NOPULL;
+gpio.Speed = GPIO_SPEED_FREQ_LOW;
+gpio.Alternate = SD_SPI_GPIO_AF;
+HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
+
+gpio.Pin = SD_SPI_MISO_PIN;
+gpio.Mode = GPIO_MODE_AF_PP;
+gpio.Pull = GPIO_PULLUP;
+gpio.Speed = GPIO_SPEED_FREQ_LOW;
+gpio.Alternate = SD_SPI_GPIO_AF;
+HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
 
     /*
      * MISO is high-impedance while the card is deselected.
@@ -111,7 +118,7 @@ HAL_StatusTypeDef SD_SPI_Init(void)
     gpio.Pin = SD_SPI_MISO_PIN;
     gpio.Mode = GPIO_MODE_AF_PP;
     gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
     gpio.Alternate = SD_SPI_GPIO_AF;
     HAL_GPIO_Init(SD_SPI_GPIO_PORT, &gpio);
 

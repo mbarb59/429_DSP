@@ -1631,52 +1631,116 @@ static void Console_RunSdSoftwareCmd58(void)
 }
 static void Console_RunSdReadZero(void)
 {
-    uint8_t preview[STORAGE_SECTOR0_PREVIEW_BYTES];
+    static uint8_t sector[STORAGE_SECTOR_SIZE];
+
     HAL_StatusTypeDef status;
+    uint32_t nonzero_count = 0U;
 
-    UART_SendString("SD Sector 0 Read Test\r\n");
-    UART_SendString("---------------------\r\n");
+    UART_SendString("SD Sector 0 Inspection\r\n");
+    UART_SendString("----------------------\r\n");
 
-    status = Storage_ReadSectorZeroPreview(
-        preview,
-        sizeof(preview));
+    status = Storage_ReadSector(
+        0U,
+        sector);
 
-    UART_SendString("HAL Status = ");
+    UART_SendString("HAL Status      = ");
     UART_SendDec((uint32_t)status);
     UART_SendString("\r\n");
 
     if (status != HAL_OK)
     {
-        UART_SendString("Result     = FAIL\r\n");
+        UART_SendString("Result          = FAIL\r\n");
         return;
     }
 
+    for (uint32_t index = 0U;
+         index < STORAGE_SECTOR_SIZE;
+         index++)
+    {
+        if (sector[index] != 0U)
+        {
+            nonzero_count++;
+        }
+    }
+
+    UART_SendString("Sector Number   = 0\r\n");
+
+    UART_SendString("Sector Size     = ");
+    UART_SendDec(STORAGE_SECTOR_SIZE);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Nonzero Bytes   = ");
+    UART_SendDec(nonzero_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("Boot Signature  = 0x");
+    UART_SendHex8(sector[510]);
+    UART_SendHex8(sector[511]);
+    UART_SendString("\r\n");
+
+    if ((sector[510] == 0x55U) &&
+        (sector[511] == 0xAAU))
+    {
+        UART_SendString(
+            "Signature Valid = YES\r\n");
+    }
+    else
+    {
+        UART_SendString(
+            "Signature Valid = NO\r\n");
+    }
+
+    UART_SendString("\r\n");
+    UART_SendString(
+        "Offset    Hexadecimal Bytes                 ASCII\r\n");
+
+    UART_SendString(
+        "--------  -----------------------------------------------  "
+        "----------------\r\n");
+
     for (uint32_t offset = 0U;
-         offset < sizeof(preview);
+         offset < STORAGE_SECTOR_SIZE;
          offset += 16U)
     {
         UART_SendHex32(offset);
-        UART_SendString(": ");
+        UART_SendString("  ");
 
-        for (uint32_t index = 0U; index < 16U; index++)
+        for (uint32_t index = 0U;
+             index < 16U;
+             index++)
         {
-            uint8_t value = preview[offset + index];
+            UART_SendHex8(
+                sector[offset + index]);
 
-            if (value < 0x10U)
-            {
-                UART_SendChar('0');
-            }
-
-            UART_SendHex32((uint32_t)value);
             UART_SendChar(' ');
+        }
+
+        UART_SendChar(' ');
+
+        for (uint32_t index = 0U;
+             index < 16U;
+             index++)
+        {
+            uint8_t value =
+                sector[offset + index];
+
+            if ((value >= 0x20U) &&
+                (value <= 0x7EU))
+            {
+                UART_SendChar((char)value);
+            }
+            else
+            {
+                UART_SendChar('.');
+            }
         }
 
         UART_SendString("\r\n");
     }
 
-    UART_SendString("Result     = PASS\r\n");
+    UART_SendString("\r\n");
+    UART_SendString("Result          = PASS\r\n");
 }
-
 static void Console_RunSdInit(void)
 {
     HAL_StatusTypeDef status;
