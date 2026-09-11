@@ -14,6 +14,7 @@
 #include "ui.h"
 #include "sd_spi.h"
 #include "sd_card.h"
+#include "sd_raw_test.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -51,9 +52,13 @@ static void Console_RunSdSoftwareCmd8(void);
 static void Console_RunSdCmd0(void);
 static void Console_RunSdSoftwareCmd58(void);
 static void Console_RunSdCsTest(void);
+static void Console_RunSdInit(void);
 static void Console_RunDmaCapture(void);
 static void Console_RunMicStats(void);
 static void Console_DumpSamples(uint32_t count);
+static void Console_RunSdRawTest(void);
+static void Console_RunSdLoopback(void);
+static void Console_RunSdDiTest(void);
 static int32_t Spectrum_BinToX(uint32_t bin);
 static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
 static void Spectrum_SetScale(uint32_t new_scale);
@@ -270,38 +275,69 @@ static void Console_ProcessCommand(char *command)
             Console_RunSdCmd0();
         }
     }
-    else if (strcmp(command, "sdbitcmd0") == 0)
+else if (strcmp(command, "sddi") == 0)
+{
+    if (Analyzer_RequireStopped())
     {
-        if (Analyzer_RequireStopped())
-       {
-        Console_RunSdSoftwareCmd0();
-       }
+        Console_RunSdDiTest();
     }
-   else if (strcmp(command, "sdbitcmd8") == 0)
-   {
+}
+else if (strcmp(command, "sdraw") == 0)
+{
+    if (Analyzer_RequireStopped())
+    {
+        Console_RunSdRawTest();
+    }
+}
+else if (strcmp(command, "sdloop") == 0)
+{
+    if (Analyzer_RequireStopped())
+    {
+        Console_RunSdLoopback();
+    }
+}
+else if (strcmp(command, "sdbitcmd0") == 0)
+{
+    if (Analyzer_RequireStopped())
+    {
+        Console_RunSdSoftwareCmd0();
+    }
+}
+else if (strcmp(command, "sdbitcmd8") == 0)
+{
     if (Analyzer_RequireStopped())
     {
         Console_RunSdSoftwareCmd8();
     }
-    }
-    else if (strcmp(command, "sdbitcmd58") == 0)
-    {
+}
+else if (strcmp(command, "sdbitcmd58") == 0)
+{
     if (Analyzer_RequireStopped())
     {
         Console_RunSdSoftwareCmd58();
     }
-    }
-    else if (strcmp(command, "sdcs") == 0)
+}
+else if (strcmp(command, "sdcs") == 0)
+{
+    if (Analyzer_RequireStopped())
     {
-    Console_RunSdCsTest();
+        Console_RunSdCsTest();
     }
-    else if (strcmp(command, "fft256") == 0)
+}
+else if (strcmp(command, "sdinit") == 0)
+{
+    if (Analyzer_RequireStopped())
     {
-        if (Analyzer_SetFFTSize(256U))
-        {
-            Console_PrintAnalyzerConfig();
-        }
+        Console_RunSdInit();
     }
+}
+else if (strcmp(command, "fft256") == 0)
+{
+    if (Analyzer_SetFFTSize(256U))
+    {
+        Console_PrintAnalyzerConfig();
+    }
+}
     else if (strcmp(command, "fft512") == 0)
     {
         if (Analyzer_SetFFTSize(512U))
@@ -781,6 +817,10 @@ static void Console_PrintHelp(void)
 	"sdbitcmd8  - Send CMD0 then CMD8 using software SPI\r\n"
 	"sdbitcmd58 - Send CMD0 then CMD58 using software SPI\r\n"
 	"sdcs        - Hold SD chip select low and high\r\n"
+        "sdraw       - Minimal hardware SPI2 CMD0/CMD8 test\r\n"
+	"sddi        - Hold SD DI high, low, then high\r\n"
+	"sdloop      - Test SPI2 with PB15 connected to PB14\r\n"
+        "sdinit      - Initialize SD card and show card information\r\n"
         "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
         "fft1024     - Set capture and FFT size to 1024\r\n"
@@ -1121,6 +1161,117 @@ static void Console_RunSdSoftwareCmd0(void)
         UART_SendString("NOT IDLE\r\n");
     }
 }
+static void Console_RunSdDiTest(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    UART_SendString("PB15 to PB14 Static Loopback\r\n");
+    UART_SendString("----------------------------\r\n");
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    /*
+     * PB15 is the test output.
+     */
+    gpio.Pin = GPIO_PIN_15;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    /*
+     * PB14 is the test input.
+     */
+    gpio.Pin = GPIO_PIN_14;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    /*
+     * Drive PB15 high.
+     */
+    GPIOB->BSRR = GPIO_PIN_15;
+    HAL_Delay(100U);
+
+    UART_SendString("PB15 Output High\r\n");
+
+    UART_SendString("PB15 ODR      = ");
+    UART_SendDec(
+        ((GPIOB->ODR & GPIO_PIN_15) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_15) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_14) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("Measure PB14 now: HIGH for 5 seconds\r\n");
+    HAL_Delay(5000U);
+
+    /*
+     * Drive PB15 low.
+     */
+    GPIOB->BSRR =
+        (uint32_t)GPIO_PIN_15 << 16U;
+
+    HAL_Delay(100U);
+
+    UART_SendString("PB15 Output Low\r\n");
+
+    UART_SendString("PB15 ODR      = ");
+    UART_SendDec(
+        ((GPIOB->ODR & GPIO_PIN_15) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_15) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_14) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString("Measure PB14 now: LOW for 5 seconds\r\n");
+    HAL_Delay(5000U);
+
+    /*
+     * Return PB15 high.
+     */
+    GPIOB->BSRR = GPIO_PIN_15;
+    HAL_Delay(100U);
+
+    UART_SendString("PB15 Output High Again\r\n");
+
+    UART_SendString("PB14 IDR      = ");
+    UART_SendDec(
+        ((GPIOB->IDR & GPIO_PIN_14) != 0U) ?
+        1U :
+        0U);
+    UART_SendString("\r\n");
+
+    UART_SendString(
+        "Power-cycle before another SPI test\r\n");
+}
 static void Console_RunSdCsTest(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -1165,6 +1316,9 @@ static void Console_RunSdSoftwareCmd8(void)
     UART_SendString("Software SPI CMD8 Test\r\n");
     UART_SendString("----------------------\r\n");
 
+    /*
+     * Enter SPI mode and place the card in idle state.
+     */
     status = SD_Card_Reset(&cmd0_r1);
 
     UART_SendString("CMD0 Status   = ");
@@ -1180,9 +1334,16 @@ static void Console_RunSdSoftwareCmd8(void)
     {
         UART_SendString(
             "CMD8 skipped because CMD0 failed\r\n");
+
         return;
     }
 
+    /*
+     * Send CMD8 as a separate CS transaction.
+     *
+     * Packet:
+     *     48 00 00 01 AA 87
+     */
     status = SD_Card_CheckInterface(
         &cmd8_r1,
         &r7_response);
@@ -1201,29 +1362,147 @@ static void Console_RunSdSoftwareCmd8(void)
 
     UART_SendString("CMD8 Result   = ");
 
-if (status == HAL_TIMEOUT)
-{
-    UART_SendString("NO RESPONSE\r\n");
+    if (status == HAL_TIMEOUT)
+    {
+        UART_SendString("NO RESPONSE\r\n");
+    }
+    else if (status != HAL_OK)
+    {
+        UART_SendString("TRANSFER ERROR\r\n");
+    }
+    else if ((cmd8_r1 == 0x01U) &&
+             (r7_response == 0x000001AAU))
+    {
+        UART_SendString("SD VERSION 2 CARD\r\n");
+    }
+    else if ((cmd8_r1 & 0x04U) != 0U)
+    {
+        UART_SendString(
+            "CMD8 NOT SUPPORTED, POSSIBLE VERSION 1 CARD\r\n");
+    }
+    else
+    {
+        UART_SendString("UNEXPECTED RESPONSE\r\n");
+    }
 }
-else if (status != HAL_OK)
+static void Console_RunSdLoopback(void)
 {
-    UART_SendString("TRANSFER ERROR\r\n");
-}
-else if ((cmd8_r1 == 0x01U) &&
-         ((r7_response & 0x00000FFFU) ==
-          0x000001AAU))
-{
-    UART_SendString("SD VERSION 2 CARD\r\n");
-}
-else if ((cmd8_r1 & 0x04U) != 0U)
-{
-    UART_SendString(
-        "CMD8 NOT SUPPORTED, POSSIBLE VERSION 1 CARD\r\n");
-}
-else
-{
-    UART_SendString("UNEXPECTED RESPONSE\r\n");
-}
+    static const uint8_t transmit_buffer[] =
+    {
+        0x00U,
+        0xFFU,
+        0x55U,
+        0xAAU,
+        0x3CU,
+        0xC3U,
+        0x40U,
+        0x95U
+    };
+
+    uint8_t receive_buffer[
+        sizeof(transmit_buffer)] = {0U};
+
+    HAL_StatusTypeDef status;
+    bool all_passed = true;
+
+    UART_SendString("SPI2 Hardware Loopback Test\r\n");
+    UART_SendString("---------------------------\r\n");
+
+    status = SD_RawTest_LoopbackBuffer(
+        transmit_buffer,
+        receive_buffer,
+        (uint16_t)sizeof(transmit_buffer));
+
+    UART_SendString("Transfer Status = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    for (uint32_t index = 0U;
+         index < (uint32_t)sizeof(transmit_buffer);
+         index++)
+    {
+        UART_SendString("TX = ");
+        UART_SendHex32(
+            (uint32_t)transmit_buffer[index]);
+
+        UART_SendString("  RX = ");
+        UART_SendHex32(
+            (uint32_t)receive_buffer[index]);
+
+        if ((status == HAL_OK) &&
+            (receive_buffer[index] ==
+             transmit_buffer[index]))
+        {
+            UART_SendString("  PASS\r\n");
+        }
+        else
+        {
+            UART_SendString("  FAIL\r\n");
+            all_passed = false;
+        }
+    }
+
+    UART_SendString("SPI2 CR1      = ");
+    UART_SendHex32(SPI2->CR1);
+    UART_SendString("\r\n");
+
+    UART_SendString("SPI2 CR2      = ");
+    UART_SendHex32(SPI2->CR2);
+    UART_SendString("\r\n");
+
+    UART_SendString("SPI2 SR       = ");
+    UART_SendHex32(SPI2->SR);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB13 Mode     = ");
+    UART_SendHex32(
+        (GPIOB->MODER >> (13U * 2U)) &
+        0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 Mode     = ");
+    UART_SendHex32(
+        (GPIOB->MODER >> (14U * 2U)) &
+        0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 Mode     = ");
+    UART_SendHex32(
+        (GPIOB->MODER >> (15U * 2U)) &
+        0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB13 AF       = ");
+    UART_SendHex32(
+        (GPIOB->AFR[1] >>
+         ((13U - 8U) * 4U)) &
+        0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 AF       = ");
+    UART_SendHex32(
+        (GPIOB->AFR[1] >>
+         ((14U - 8U) * 4U)) &
+        0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 AF       = ");
+    UART_SendHex32(
+        (GPIOB->AFR[1] >>
+         ((15U - 8U) * 4U)) &
+        0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("Result        = ");
+
+    if (all_passed)
+    {
+        UART_SendString("PASS\r\n");
+    }
+    else
+    {
+        UART_SendString("FAIL\r\n");
+    }
 }
 static void Console_RunDmaCapture(void)
 {
@@ -1334,6 +1613,331 @@ static void Console_RunSdSoftwareCmd58(void)
     else
     {
         UART_SendString("CMD58 Result  = RESPONSE RECEIVED\r\n");
+    }
+}
+static void Console_RunSdInit(void)
+{
+    HAL_StatusTypeDef status;
+    const SD_CardInfo *card_info;
+
+    UART_SendString("SD Card Initialization\r\n");
+    UART_SendString("----------------------\r\n");
+    UART_SendString("Starting hardware SPI2 SD test\r\n");
+
+    status = SD_Card_Init();
+    card_info = SD_Card_GetInfo();
+    UART_SendString("PB13 Mode     = ");
+    UART_SendHex32(
+                  (GPIOB->MODER >> (13U * 2U)) & 0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 Mode     = ");
+    UART_SendHex32(
+                 (GPIOB->MODER >> (14U * 2U)) & 0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 Mode     = ");
+    UART_SendHex32(
+                  (GPIOB->MODER >> (15U * 2U)) & 0x03U);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB13 AF       = ");
+    UART_SendHex32(
+                  (GPIOB->AFR[1] >> ((13U - 8U) * 4U)) &
+                  0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB14 AF       = ");
+    UART_SendHex32(
+                  (GPIOB->AFR[1] >> ((14U - 8U) * 4U)) &
+                  0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("PB15 AF       = ");
+    UART_SendHex32(
+                  (GPIOB->AFR[1] >> ((15U - 8U) * 4U)) &
+                  0x0FU);
+    UART_SendString("\r\n");
+
+    UART_SendString("SPI2 CR1      = ");
+    UART_SendHex32(SPI2->CR1);
+    UART_SendString("\r\n");
+
+    UART_SendString("SPI2 CR2      = ");
+    UART_SendHex32(SPI2->CR2);
+    UART_SendString("\r\n");
+
+    UART_SendString("SPI2 SR       = ");
+    UART_SendHex32(SPI2->SR);
+    UART_SendString("\r\n");
+    UART_SendString("HAL Status    = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    UART_SendString("Initialized   = ");
+    UART_SendString(
+        card_info->initialized ?
+        "YES\r\n" :
+        "NO\r\n");
+
+    UART_SendString("Version 2     = ");
+    UART_SendString(
+        card_info->version_2 ?
+        "YES\r\n" :
+        "NO\r\n");
+
+    UART_SendString("CMD0 R1       = ");
+    UART_SendHex32(
+        (uint32_t)card_info->cmd0_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD0 Tries    = ");
+    UART_SendDec(
+        card_info->cmd0_attempts);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 Status   = ");
+    UART_SendDec(
+        (uint32_t)card_info->cmd8_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 R1       = ");
+    UART_SendHex32(
+        (uint32_t)card_info->cmd8_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 R7       = ");
+    UART_SendHex32(
+        card_info->cmd8_r7);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD55 Status  = ");
+    UART_SendDec(
+        (uint32_t)card_info->cmd55_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD55 R1      = ");
+    UART_SendHex32(
+        (uint32_t)card_info->cmd55_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("ACMD41 Status = ");
+    UART_SendDec(
+        (uint32_t)card_info->acmd41_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("ACMD41 R1     = ");
+    UART_SendHex32(
+        (uint32_t)card_info->acmd41_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("ACMD41 Tries  = ");
+    UART_SendDec(
+        card_info->acmd41_attempts);
+    UART_SendString("\r\n");
+
+    UART_SendString("OCR           = ");
+    UART_SendHex32(card_info->ocr);
+    UART_SendString("\r\n");
+
+    UART_SendString("Power Ready   = ");
+    UART_SendString(
+        card_info->power_ready ?
+        "YES\r\n" :
+        "NO\r\n");
+
+    UART_SendString("3.3V Support  = ");
+    UART_SendString(
+        card_info->supports_3v3 ?
+        "YES\r\n" :
+        "NO\r\n");
+
+    UART_SendString("Card Type     = ");
+
+    switch (card_info->type)
+    {
+        case SD_CARD_TYPE_SDSC:
+            UART_SendString("SDSC\r\n");
+            break;
+
+        case SD_CARD_TYPE_SDHC:
+            UART_SendString("SDHC/SDXC\r\n");
+            break;
+
+        case SD_CARD_TYPE_UNKNOWN:
+        default:
+            UART_SendString("UNKNOWN\r\n");
+            break;
+    }
+
+    UART_SendString("Addressing    = ");
+
+    if (card_info->type == SD_CARD_TYPE_SDHC)
+    {
+        UART_SendString("BLOCK\r\n");
+    }
+    else if (card_info->type == SD_CARD_TYPE_SDSC)
+    {
+        UART_SendString("BYTE\r\n");
+    }
+    else
+    {
+        UART_SendString("UNKNOWN\r\n");
+    }
+
+    UART_SendString("Failure Stage = ");
+
+    if ((status == HAL_OK) &&
+        card_info->initialized)
+    {
+        UART_SendString("NONE\r\n");
+    }
+    else if (card_info->cmd0_attempts == 0U)
+    {
+        UART_SendString(
+            "CMD0 NOT ATTEMPTED\r\n");
+    }
+    else if ((card_info->cmd0_r1 != 0x01U) &&
+             (card_info->cmd0_r1 != 0x03U))
+    {
+        UART_SendString("CMD0 RESPONSE\r\n");
+    }
+    else if (card_info->cmd8_status == HAL_TIMEOUT)
+    {
+        UART_SendString("CMD8 TIMEOUT\r\n");
+    }
+    else if (card_info->cmd8_status != HAL_OK)
+    {
+        UART_SendString("CMD8 ERROR\r\n");
+    }
+    else if ((card_info->cmd8_r1 != 0x01U) &&
+             (card_info->cmd8_r1 != 0x03U))
+    {
+        UART_SendString("CMD8 R1\r\n");
+    }
+    else if (card_info->cmd8_r7 != 0x000001AAU)
+    {
+        UART_SendString("CMD8 R7\r\n");
+    }
+    else if (card_info->cmd55_status == HAL_TIMEOUT)
+    {
+        UART_SendString("CMD55 TIMEOUT\r\n");
+    }
+    else if (card_info->cmd55_status != HAL_OK)
+    {
+        UART_SendString("CMD55 ERROR\r\n");
+    }
+    else if (card_info->acmd41_attempts == 0U)
+    {
+        UART_SendString(
+            "ACMD41 NOT ATTEMPTED\r\n");
+    }
+    else if (card_info->acmd41_status == HAL_TIMEOUT)
+    {
+        UART_SendString("ACMD41 TIMEOUT\r\n");
+    }
+    else if (card_info->acmd41_status != HAL_OK)
+    {
+        UART_SendString("ACMD41 ERROR\r\n");
+    }
+    else if (card_info->acmd41_r1 != 0x00U)
+    {
+        UART_SendString(
+            "ACMD41 NOT READY\r\n");
+    }
+    else if (card_info->ocr == 0U)
+    {
+        UART_SendString("CMD58 OR OCR\r\n");
+    }
+    else if (!card_info->power_ready)
+    {
+        UART_SendString(
+            "OCR POWER READY\r\n");
+    }
+    else if (!card_info->supports_3v3)
+    {
+        UART_SendString("OCR VOLTAGE\r\n");
+    }
+    else
+    {
+        UART_SendString(
+            "FINAL CARD CHECK\r\n");
+    }
+
+    UART_SendString("Result        = ");
+
+    if ((status == HAL_OK) &&
+        card_info->initialized)
+    {
+        UART_SendString("SUCCESS\r\n");
+    }
+    else if (status == HAL_TIMEOUT)
+    {
+        UART_SendString("TIMEOUT\r\n");
+    }
+    else
+    {
+        UART_SendString("FAILED\r\n");
+    }
+}
+static void Console_RunSdRawTest(void)
+{
+    SD_RawTestResult result;
+    HAL_StatusTypeDef status;
+
+    UART_SendString(
+        "Minimal Hardware SPI2 CMD0/CMD8 Test\r\n");
+
+    UART_SendString(
+        "-----------------------------------\r\n");
+
+    status = SD_RawTest_Run(&result);
+
+    UART_SendString("SPI Init      = ");
+    UART_SendDec(
+        (uint32_t)result.spi_init_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD0 Status   = ");
+    UART_SendDec(
+        (uint32_t)result.cmd0_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD0 R1       = ");
+    UART_SendHex32(
+        (uint32_t)result.cmd0_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 Status   = ");
+    UART_SendDec(
+        (uint32_t)result.cmd8_status);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 R1       = ");
+    UART_SendHex32(
+        (uint32_t)result.cmd8_r1);
+    UART_SendString("\r\n");
+
+    UART_SendString("CMD8 R7       = ");
+    UART_SendHex32(result.cmd8_r7);
+    UART_SendString("\r\n");
+
+    UART_SendString("Final Status  = ");
+    UART_SendDec((uint32_t)status);
+    UART_SendString("\r\n");
+
+    UART_SendString("Result        = ");
+
+    if ((status == HAL_OK) &&
+        (result.cmd0_r1 == 0x01U) &&
+        (result.cmd8_r1 == 0x01U) &&
+        (result.cmd8_r7 == 0x000001AAUL))
+    {
+        UART_SendString("PASS\r\n");
+    }
+    else
+    {
+        UART_SendString("FAIL\r\n");
     }
 }
 static void Console_RunMicStats(void)
