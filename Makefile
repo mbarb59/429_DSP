@@ -25,6 +25,8 @@ C_INCLUDES = \
 
 C_SOURCES = \
 Core/Src/main.c \
+Middlewares/Third_Party/FatFs/src/ff.c \
+Core/Src/sd_diskio.c \
 Core/Src/system_stm32f4xx.c \
 Core/Src/uart.c \
 Core/Src/ltdc_ili9341.c \
@@ -73,7 +75,7 @@ $(MCU) \
 -TLinker/STM32F429ZITX_FLASH.ld\
 -Wl,-Map=build/$(TARGET).map \
 -Wl,--gc-sections
-	
+
 OBJECTS = $(C_SOURCES:.c=.o)
 OBJECTS += $(ASM_SOURCES:.s=.o)
 
@@ -107,3 +109,5 @@ symbols:
 size: build/429_DSP.elf
 	arm-none-eabi-size build/429_DSP.elf
 	arm-none-eabi-size -A build/429_DSP.elf
+
+C_INCLUDES += -IMiddlewares/Third_Party/FatFs/src
