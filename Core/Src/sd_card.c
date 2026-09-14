@@ -29,6 +29,7 @@
 #define SD_CMD16_SET_BLOCKLEN         16U
 #define SD_CMD17_READ_SINGLE_BLOCK    17U
 #define SD_CMD24_WRITE_SINGLE_BLOCK   24U
+#define SD_CMD25_WRITE_MULTIPLE_BLOCK  25U
 #define SD_CMD55_APP_CMD              55U
 #define SD_CMD58_READ_OCR             58U
 #define SD_ACMD41_SEND_OP_COND        41U
@@ -43,6 +44,8 @@
 
 #define SD_DATA_TOKEN_START_BLOCK  0xFEU
 #define SD_DATA_TOKEN_WRITE        0xFEU
+#define SD_TOKEN_MULTI_WRITE_START 0xFCU
+#define SD_TOKEN_MULTI_WRITE_STOP  0xFDU
 #define SD_DATA_RESPONSE_MASK      0x1FU
 #define SD_DATA_RESPONSE_ACCEPTED  0x05U
 
@@ -919,6 +922,174 @@ HAL_StatusTypeDef SD_Card_WriteSector(
     {
         status = SD_WaitReady(
             SD_BUSY_TIMEOUT_MS);
+    }
+
+    SD_Deselect();
+
+    return status;
+}
+
+HAL_StatusTypeDef SD_Card_WriteSectors(
+    uint32_t start_sector,
+    const uint8_t *buffer,
+    uint32_t sector_count)
+{
+    HAL_StatusTypeDef status;
+    uint8_t r1_response = SD_IDLE_BYTE;
+    uint8_t received = SD_IDLE_BYTE;
+    uint32_t argument;
+    bool command_started = false;
+
+    if (!sd_card_info.initialized ||
+        (buffer == NULL) ||
+        (sector_count == 0U))
+    {
+        return HAL_ERROR;
+    }
+
+    if (sector_count == 1U)
+    {
+        return SD_Card_WriteSector(
+            start_sector,
+            buffer);
+    }
+
+    argument =
+        SD_GetCommandAddress(start_sector);
+
+    /*
+     * SD_SendCommand() selects the card and leaves CS low
+     * when the command succeeds. CMD25 requires CS to remain
+     * low until the 0xFD stop-transmission token is sent.
+     */
+    status = SD_SendCommand(
+        SD_CMD25_WRITE_MULTIPLE_BLOCK,
+        argument,
+        0x01U,
+        &r1_response);
+
+    if ((status != HAL_OK) ||
+        (r1_response != SD_R1_READY))
+    {
+        SD_Deselect();
+        return (status == HAL_OK) ?
+               HAL_ERROR :
+               status;
+    }
+
+    command_started = true;
+
+    for (uint32_t sector_index = 0U;
+         sector_index < sector_count;
+         sector_index++)
+    {
+        const uint8_t *sector_buffer =
+            &buffer[sector_index *
+                    SD_CARD_SECTOR_SIZE];
+
+        status = SD_WaitReady(
+            SD_BUSY_TIMEOUT_MS);
+
+        if (status != HAL_OK)
+        {
+            break;
+        }
+
+        /*
+         * CMD25 uses 0xFC before each 512-byte block.
+         */
+        status = SD_TransferByte(
+            SD_TOKEN_MULTI_WRITE_START,
+            &received);
+
+        for (uint32_t byte_index = 0U;
+             (status == HAL_OK) &&
+             (byte_index < SD_CARD_SECTOR_SIZE);
+             byte_index++)
+        {
+            status = SD_TransferByte(
+                sector_buffer[byte_index],
+                &received);
+        }
+
+        /* Send two dummy CRC bytes. */
+        if (status == HAL_OK)
+        {
+            status = SD_TransferByte(
+                SD_IDLE_BYTE,
+                &received);
+        }
+
+        if (status == HAL_OK)
+        {
+            status = SD_TransferByte(
+                SD_IDLE_BYTE,
+                &received);
+        }
+
+        /* Read and validate the data-response token. */
+        if (status == HAL_OK)
+        {
+            status = SD_TransferByte(
+                SD_IDLE_BYTE,
+                &received);
+        }
+
+        if ((status == HAL_OK) &&
+            ((received & SD_DATA_RESPONSE_MASK) !=
+             SD_DATA_RESPONSE_ACCEPTED))
+        {
+            status = HAL_ERROR;
+        }
+
+        if (status != HAL_OK)
+        {
+            break;
+        }
+
+        /*
+         * Wait for programming to complete before sending
+         * the next block.
+         */
+        status = SD_WaitReady(
+            SD_BUSY_TIMEOUT_MS);
+
+        if (status != HAL_OK)
+        {
+            break;
+        }
+    }
+
+    if (command_started)
+    {
+        HAL_StatusTypeDef stop_status;
+        uint8_t ignored;
+
+        /*
+         * CMD25 is terminated with the 0xFD stop token.
+         * CMD12 is not used for a multi-block write.
+         */
+        stop_status = SD_TransferByte(
+            SD_TOKEN_MULTI_WRITE_STOP,
+            &ignored);
+
+        if ((status == HAL_OK) &&
+            (stop_status != HAL_OK))
+        {
+            status = stop_status;
+        }
+
+        if (stop_status == HAL_OK)
+        {
+            stop_status = SD_WaitReady(
+                SD_BUSY_TIMEOUT_MS);
+
+            if ((status == HAL_OK) &&
+                (stop_status != HAL_OK))
+            {
+                status = stop_status;
+            }
+        }
     }
 
     SD_Deselect();

@@ -51,29 +51,33 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
     return RES_OK;
 }
 
-DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
+DRESULT disk_write(
+    BYTE pdrv,
+    const BYTE *buffer,
+    LBA_t sector,
+    UINT count)
 {
-    if ((pdrv != 0U) || (buff == NULL) || (count == 0U))
+    HAL_StatusTypeDef status;
+
+    if (pdrv != 0U)
     {
         return RES_PARERR;
     }
 
-    if (disk_initialize(pdrv) != 0U)
+    if ((buffer == NULL) ||
+        (count == 0U))
     {
-        return RES_NOTRDY;
+        return RES_PARERR;
     }
 
-    for (UINT index = 0U; index < count; index++)
-    {
-        if (Storage_WriteSector(
-                (uint32_t)sector + index,
-                &buff[index * SD_CARD_SECTOR_SIZE]) != HAL_OK)
-        {
-            return RES_ERROR;
-        }
-    }
+    status = Storage_WriteSectors(
+        (uint32_t)sector,
+        buffer,
+        (uint32_t)count);
 
-    return RES_OK;
+    return (status == HAL_OK) ?
+           RES_OK :
+           RES_ERROR;
 }
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
