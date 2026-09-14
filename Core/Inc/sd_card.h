@@ -62,4 +62,11 @@ HAL_StatusTypeDef SD_Card_WriteSector(
     uint32_t sector_number,
     const uint8_t *buffer);
 
+HAL_StatusTypeDef SD_Card_WriteSectors(
+    uint32_t start_sector,
+    const uint8_t *buffer,
+    uint32_t sector_count);
+
+HAL_StatusTypeDef SD_Card_SetTransferSpeed(void);
+
 #endif

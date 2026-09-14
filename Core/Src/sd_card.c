@@ -8,10 +8,11 @@
  *   PA5              -> SD CS
  *
  * Use a 10 kOhm pull-up from SD DO / PC2 to 3.3 V.
- * The current Adafruit 5 V-ready breakout is powered from 5 V.
+ * The Adafruit 5 V-ready breakout is powered from 5 V.
  *
- * SPI2 runs in Mode 0 at approximately 164 kHz during initialization
- * when APB1 is 42 MHz and the prescaler is 256.
+ * SPI2 runs in Mode 0 at approximately 164 kHz during card
+ * initialization. After successful initialization, the driver
+ * switches SPI2 to 5.25 MHz for normal sector transfers.
  */
 
 #include "sd_card.h"
@@ -43,7 +44,7 @@
 #define SD_DATA_TOKEN_START_BLOCK  0xFEU
 #define SD_DATA_TOKEN_WRITE        0xFEU
 #define SD_DATA_RESPONSE_MASK      0x1FU
-#define SD_DATA_ACCEPTED           0x05U
+#define SD_DATA_RESPONSE_ACCEPTED  0x05U
 
 #define SD_OCR_POWER_READY         (1UL << 31U)
 #define SD_OCR_CCS                 (1UL << 30U)
@@ -55,9 +56,9 @@
 #define SD_ACMD41_HCS              0x40000000UL
 
 #define SD_R1_TIMEOUT_BYTES        16U
-#define SD_READY_TIMEOUT_BYTES     32U
+#define SD_READY_TIMEOUT_MS        100U
 #define SD_DATA_TIMEOUT_BYTES      65535U
-#define SD_BUSY_TIMEOUT_BYTES      65535U
+#define SD_BUSY_TIMEOUT_MS         500U
 #define SD_ACMD41_MAX_ATTEMPTS     1000U
 #define SD_CMD0_MAX_ATTEMPTS       5U
 #define SD_SPI_TIMEOUT_MS          100U
@@ -67,11 +68,17 @@ static bool sd_transport_initialized;
 static SD_CardInfo sd_card_info;
 
 static HAL_StatusTypeDef SD_Transport_Init(void);
+
 static HAL_StatusTypeDef SD_TransferByte(
     uint8_t transmit_byte,
     uint8_t *receive_byte);
-static HAL_StatusTypeDef SD_SendIdleBytes(uint32_t count);
-static HAL_StatusTypeDef SD_WaitReady(uint32_t byte_limit);
+
+static HAL_StatusTypeDef SD_SendIdleBytes(
+    uint32_t count);
+
+static HAL_StatusTypeDef SD_WaitReady(
+    uint32_t timeout_ms);
+
 static void SD_Select(void);
 static void SD_Deselect(void);
 
@@ -85,7 +92,9 @@ static HAL_StatusTypeDef SD_ReadBytes(
     uint8_t *buffer,
     uint32_t length);
 
-static uint32_t SD_GetCommandAddress(uint32_t sector_number);
+static uint32_t SD_GetCommandAddress(
+    uint32_t sector_number);
+
 static void SD_ResetInfo(void);
 
 static HAL_StatusTypeDef SD_Transport_Init(void)
@@ -170,7 +179,8 @@ static HAL_StatusTypeDef SD_TransferByte(
     uint8_t transmit_byte,
     uint8_t *receive_byte)
 {
-    if (!sd_transport_initialized || (receive_byte == NULL))
+    if (!sd_transport_initialized ||
+        (receive_byte == NULL))
     {
         return HAL_ERROR;
     }
@@ -183,12 +193,17 @@ static HAL_StatusTypeDef SD_TransferByte(
         SD_SPI_TIMEOUT_MS);
 }
 
-static HAL_StatusTypeDef SD_SendIdleBytes(uint32_t count)
+static HAL_StatusTypeDef SD_SendIdleBytes(
+    uint32_t count)
 {
-    for (uint32_t index = 0U; index < count; index++)
+    for (uint32_t index = 0U;
+         index < count;
+         index++)
     {
         uint8_t received;
-        HAL_StatusTypeDef status = SD_TransferByte(
+        HAL_StatusTypeDef status;
+
+        status = SD_TransferByte(
             SD_IDLE_BYTE,
             &received);
 
@@ -201,34 +216,42 @@ static HAL_StatusTypeDef SD_SendIdleBytes(uint32_t count)
     return HAL_OK;
 }
 
-static HAL_StatusTypeDef SD_WaitReady(uint32_t byte_limit)
+static HAL_StatusTypeDef SD_WaitReady(
+    uint32_t timeout_ms)
 {
-    for (uint32_t attempt = 0U;
-         attempt < byte_limit;
-         attempt++)
+    uint32_t start_tick;
+
+    start_tick = HAL_GetTick();
+
+    do
     {
-        uint8_t received = 0U;
-        HAL_StatusTypeDef status = SD_TransferByte(
+        uint8_t received_byte = 0x00U;
+        HAL_StatusTypeDef status;
+
+        status = SD_TransferByte(
             SD_IDLE_BYTE,
-            &received);
+            &received_byte);
 
         if (status != HAL_OK)
         {
             return status;
         }
 
-        if (received == SD_IDLE_BYTE)
+        if (received_byte == SD_IDLE_BYTE)
         {
             return HAL_OK;
         }
     }
+    while ((HAL_GetTick() - start_tick) <
+           timeout_ms);
 
     return HAL_TIMEOUT;
 }
 
 static void SD_Select(void)
 {
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_5 << 16U;
+    GPIOA->BSRR =
+        (uint32_t)GPIO_PIN_5 << 16U;
 }
 
 static void SD_Deselect(void)
@@ -239,7 +262,9 @@ static void SD_Deselect(void)
 
     if (sd_transport_initialized)
     {
-        (void)SD_TransferByte(SD_IDLE_BYTE, &discarded);
+        (void)SD_TransferByte(
+            SD_IDLE_BYTE,
+            &discarded);
     }
 }
 
@@ -259,22 +284,30 @@ static HAL_StatusTypeDef SD_SendCommand(
 
     *r1_response = SD_IDLE_BYTE;
 
-    packet[0] = (uint8_t)(SD_COMMAND_PREFIX |
-                          (command & 0x3FU));
-    packet[1] = (uint8_t)((argument >> 24U) & 0xFFU);
-    packet[2] = (uint8_t)((argument >> 16U) & 0xFFU);
-    packet[3] = (uint8_t)((argument >> 8U) & 0xFFU);
-    packet[4] = (uint8_t)(argument & 0xFFU);
-    packet[5] = (uint8_t)(crc | 0x01U);
+    packet[0] =
+        (uint8_t)(SD_COMMAND_PREFIX |
+                  (command & 0x3FU));
+    packet[1] =
+        (uint8_t)((argument >> 24U) & 0xFFU);
+    packet[2] =
+        (uint8_t)((argument >> 16U) & 0xFFU);
+    packet[3] =
+        (uint8_t)((argument >> 8U) & 0xFFU);
+    packet[4] =
+        (uint8_t)(argument & 0xFFU);
+    packet[5] =
+        (uint8_t)(crc | 0x01U);
 
     SD_Select();
 
     if (command != SD_CMD0_GO_IDLE_STATE)
     {
-        status = SD_WaitReady(SD_READY_TIMEOUT_BYTES);
+        status = SD_WaitReady(
+            SD_READY_TIMEOUT_MS);
 
         if (status != HAL_OK)
         {
+            SD_Deselect();
             return status;
         }
     }
@@ -285,10 +318,13 @@ static HAL_StatusTypeDef SD_SendCommand(
     {
         uint8_t discarded;
 
-        status = SD_TransferByte(packet[index], &discarded);
+        status = SD_TransferByte(
+            packet[index],
+            &discarded);
 
         if (status != HAL_OK)
         {
+            SD_Deselect();
             return status;
         }
     }
@@ -299,10 +335,13 @@ static HAL_StatusTypeDef SD_SendCommand(
     {
         uint8_t response = SD_IDLE_BYTE;
 
-        status = SD_TransferByte(SD_IDLE_BYTE, &response);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &response);
 
         if (status != HAL_OK)
         {
+            SD_Deselect();
             return status;
         }
 
@@ -313,6 +352,7 @@ static HAL_StatusTypeDef SD_SendCommand(
         }
     }
 
+    SD_Deselect();
     return HAL_TIMEOUT;
 }
 
@@ -320,14 +360,19 @@ static HAL_StatusTypeDef SD_ReadBytes(
     uint8_t *buffer,
     uint32_t length)
 {
-    if ((buffer == NULL) || (length == 0U))
+    if ((buffer == NULL) ||
+        (length == 0U))
     {
         return HAL_ERROR;
     }
 
-    for (uint32_t index = 0U; index < length; index++)
+    for (uint32_t index = 0U;
+         index < length;
+         index++)
     {
-        HAL_StatusTypeDef status = SD_TransferByte(
+        HAL_StatusTypeDef status;
+
+        status = SD_TransferByte(
             SD_IDLE_BYTE,
             &buffer[index]);
 
@@ -340,14 +385,17 @@ static HAL_StatusTypeDef SD_ReadBytes(
     return HAL_OK;
 }
 
-static uint32_t SD_GetCommandAddress(uint32_t sector_number)
+static uint32_t SD_GetCommandAddress(
+    uint32_t sector_number)
 {
-    if (sd_card_info.type == SD_CARD_TYPE_SDHC)
+    if (sd_card_info.type ==
+        SD_CARD_TYPE_SDHC)
     {
         return sector_number;
     }
 
-    return sector_number * SD_CARD_SECTOR_SIZE;
+    return sector_number *
+           SD_CARD_SECTOR_SIZE;
 }
 
 static void SD_ResetInfo(void)
@@ -373,7 +421,8 @@ static void SD_ResetInfo(void)
     sd_card_info.acmd41_status = HAL_TIMEOUT;
 }
 
-HAL_StatusTypeDef SD_Card_Reset(uint8_t *r1_response)
+HAL_StatusTypeDef SD_Card_Reset(
+    uint8_t *r1_response)
 {
     HAL_StatusTypeDef status;
 
@@ -390,7 +439,6 @@ HAL_StatusTypeDef SD_Card_Reset(uint8_t *r1_response)
     }
 
     HAL_Delay(100U);
-
     SD_Deselect();
 
     status = SD_SendIdleBytes(10U);
@@ -414,7 +462,9 @@ HAL_StatusTypeDef SD_Card_Reset(uint8_t *r1_response)
         return HAL_OK;
     }
 
-    return (status == HAL_OK) ? HAL_ERROR : status;
+    return (status == HAL_OK) ?
+           HAL_ERROR :
+           status;
 }
 
 HAL_StatusTypeDef SD_Card_CheckInterface(
@@ -424,7 +474,8 @@ HAL_StatusTypeDef SD_Card_CheckInterface(
     HAL_StatusTypeDef status;
     uint8_t r7_bytes[4] = {0U};
 
-    if ((r1_response == NULL) || (r7_response == NULL))
+    if ((r1_response == NULL) ||
+        (r7_response == NULL))
     {
         return HAL_ERROR;
     }
@@ -439,7 +490,8 @@ HAL_StatusTypeDef SD_Card_CheckInterface(
         r1_response);
 
     if ((status == HAL_OK) &&
-        ((*r1_response & SD_R1_ILLEGAL_COMMAND) == 0U))
+        ((*r1_response &
+          SD_R1_ILLEGAL_COMMAND) == 0U))
     {
         status = SD_ReadBytes(
             r7_bytes,
@@ -453,7 +505,8 @@ HAL_StatusTypeDef SD_Card_CheckInterface(
         return status;
     }
 
-    if ((*r1_response & SD_R1_ILLEGAL_COMMAND) != 0U)
+    if ((*r1_response &
+         SD_R1_ILLEGAL_COMMAND) != 0U)
     {
         return HAL_ERROR;
     }
@@ -465,7 +518,8 @@ HAL_StatusTypeDef SD_Card_CheckInterface(
         ((uint32_t)r7_bytes[3]);
 
     if ((*r1_response == SD_R1_IDLE) &&
-        (*r7_response == SD_CMD8_EXPECTED_R7))
+        (*r7_response ==
+         SD_CMD8_EXPECTED_R7))
     {
         return HAL_OK;
     }
@@ -480,7 +534,8 @@ HAL_StatusTypeDef SD_Card_ReadOcr(
     HAL_StatusTypeDef status;
     uint8_t ocr_bytes[4] = {0U};
 
-    if ((r1_response == NULL) || (ocr_response == NULL))
+    if ((r1_response == NULL) ||
+        (ocr_response == NULL))
     {
         return HAL_ERROR;
     }
@@ -495,7 +550,8 @@ HAL_StatusTypeDef SD_Card_ReadOcr(
         r1_response);
 
     if ((status == HAL_OK) &&
-        ((*r1_response & SD_R1_ERROR_MASK) == 0U))
+        ((*r1_response &
+          SD_R1_ERROR_MASK) == 0U))
     {
         status = SD_ReadBytes(
             ocr_bytes,
@@ -537,7 +593,8 @@ HAL_StatusTypeDef SD_Card_Init(void)
     {
         status = SD_Card_Reset(&r1_response);
         sd_card_info.cmd0_r1 = r1_response;
-        sd_card_info.cmd0_attempts = attempt + 1U;
+        sd_card_info.cmd0_attempts =
+            attempt + 1U;
 
         if ((status == HAL_OK) &&
             (r1_response == SD_R1_IDLE))
@@ -551,7 +608,9 @@ HAL_StatusTypeDef SD_Card_Init(void)
     if ((status != HAL_OK) ||
         (r1_response != SD_R1_IDLE))
     {
-        return (status == HAL_OK) ? HAL_ERROR : status;
+        return (status == HAL_OK) ?
+               HAL_ERROR :
+               status;
     }
 
     status = SD_Card_CheckInterface(
@@ -597,7 +656,8 @@ HAL_StatusTypeDef SD_Card_Init(void)
 
         sd_card_info.acmd41_status = status;
         sd_card_info.acmd41_r1 = r1_response;
-        sd_card_info.acmd41_attempts = attempt + 1U;
+        sd_card_info.acmd41_attempts =
+            attempt + 1U;
 
         SD_Deselect();
 
@@ -632,17 +692,22 @@ HAL_StatusTypeDef SD_Card_Init(void)
     if ((status != HAL_OK) ||
         (r1_response != SD_R1_READY))
     {
-        return (status == HAL_OK) ? HAL_ERROR : status;
+        return (status == HAL_OK) ?
+               HAL_ERROR :
+               status;
     }
 
     sd_card_info.power_ready =
-        (sd_card_info.ocr & SD_OCR_POWER_READY) != 0U;
+        (sd_card_info.ocr &
+         SD_OCR_POWER_READY) != 0U;
 
     sd_card_info.supports_3v3 =
-        (sd_card_info.ocr & SD_OCR_3V3_MASK) != 0U;
+        (sd_card_info.ocr &
+         SD_OCR_3V3_MASK) != 0U;
 
     sd_card_info.type =
-        ((sd_card_info.ocr & SD_OCR_CCS) != 0U) ?
+        ((sd_card_info.ocr &
+          SD_OCR_CCS) != 0U) ?
         SD_CARD_TYPE_SDHC :
         SD_CARD_TYPE_SDSC;
 
@@ -652,7 +717,8 @@ HAL_StatusTypeDef SD_Card_Init(void)
         return HAL_ERROR;
     }
 
-    if (sd_card_info.type == SD_CARD_TYPE_SDSC)
+    if (sd_card_info.type ==
+        SD_CARD_TYPE_SDSC)
     {
         status = SD_SendCommand(
             SD_CMD16_SET_BLOCKLEN,
@@ -665,11 +731,21 @@ HAL_StatusTypeDef SD_Card_Init(void)
         if ((status != HAL_OK) ||
             (r1_response != SD_R1_READY))
         {
-            return (status == HAL_OK) ? HAL_ERROR : status;
+            return (status == HAL_OK) ?
+                   HAL_ERROR :
+                   status;
         }
     }
 
     sd_card_info.initialized = true;
+
+    status = SD_Card_SetTransferSpeed();
+
+    if (status != HAL_OK)
+    {
+        sd_card_info.initialized = false;
+        return status;
+    }
 
     return HAL_OK;
 }
@@ -688,12 +764,14 @@ HAL_StatusTypeDef SD_Card_ReadSector(
     uint8_t token = SD_IDLE_BYTE;
     uint32_t argument;
 
-    if (!sd_card_info.initialized || (buffer == NULL))
+    if (!sd_card_info.initialized ||
+        (buffer == NULL))
     {
         return HAL_ERROR;
     }
 
-    argument = SD_GetCommandAddress(sector_number);
+    argument =
+        SD_GetCommandAddress(sector_number);
 
     status = SD_SendCommand(
         SD_CMD17_READ_SINGLE_BLOCK,
@@ -708,7 +786,9 @@ HAL_StatusTypeDef SD_Card_ReadSector(
              attempt < SD_DATA_TIMEOUT_BYTES;
              attempt++)
         {
-            status = SD_TransferByte(SD_IDLE_BYTE, &token);
+            status = SD_TransferByte(
+                SD_IDLE_BYTE,
+                &token);
 
             if (status != HAL_OK)
             {
@@ -722,7 +802,8 @@ HAL_StatusTypeDef SD_Card_ReadSector(
         }
 
         if ((status == HAL_OK) &&
-            (token != SD_DATA_TOKEN_START_BLOCK))
+            (token !=
+             SD_DATA_TOKEN_START_BLOCK))
         {
             status = HAL_TIMEOUT;
         }
@@ -730,18 +811,24 @@ HAL_StatusTypeDef SD_Card_ReadSector(
 
     if (status == HAL_OK)
     {
-        status = SD_ReadBytes(buffer, SD_CARD_SECTOR_SIZE);
+        status = SD_ReadBytes(
+            buffer,
+            SD_CARD_SECTOR_SIZE);
     }
 
     if (status == HAL_OK)
     {
         uint8_t discarded;
 
-        status = SD_TransferByte(SD_IDLE_BYTE, &discarded);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &discarded);
 
         if (status == HAL_OK)
         {
-            status = SD_TransferByte(SD_IDLE_BYTE, &discarded);
+            status = SD_TransferByte(
+                SD_IDLE_BYTE,
+                &discarded);
         }
     }
 
@@ -759,12 +846,14 @@ HAL_StatusTypeDef SD_Card_WriteSector(
     uint8_t received;
     uint32_t argument;
 
-    if (!sd_card_info.initialized || (buffer == NULL))
+    if (!sd_card_info.initialized ||
+        (buffer == NULL))
     {
         return HAL_ERROR;
     }
 
-    argument = SD_GetCommandAddress(sector_number);
+    argument =
+        SD_GetCommandAddress(sector_number);
 
     status = SD_SendCommand(
         SD_CMD24_WRITE_SINGLE_BLOCK,
@@ -775,48 +864,95 @@ HAL_StatusTypeDef SD_Card_WriteSector(
     if ((status == HAL_OK) &&
         (r1_response == SD_R1_READY))
     {
-        status = SD_TransferByte(SD_IDLE_BYTE, &received);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &received);
     }
 
     if (status == HAL_OK)
     {
-        status = SD_TransferByte(SD_DATA_TOKEN_WRITE, &received);
+        status = SD_TransferByte(
+            SD_DATA_TOKEN_WRITE,
+            &received);
     }
 
     for (uint32_t index = 0U;
-         (status == HAL_OK) && (index < SD_CARD_SECTOR_SIZE);
+         (status == HAL_OK) &&
+         (index < SD_CARD_SECTOR_SIZE);
          index++)
     {
-        status = SD_TransferByte(buffer[index], &received);
+        status = SD_TransferByte(
+            buffer[index],
+            &received);
     }
 
     if (status == HAL_OK)
     {
-        status = SD_TransferByte(SD_IDLE_BYTE, &received);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &received);
     }
 
     if (status == HAL_OK)
     {
-        status = SD_TransferByte(SD_IDLE_BYTE, &received);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &received);
     }
 
     if (status == HAL_OK)
     {
-        status = SD_TransferByte(SD_IDLE_BYTE, &received);
+        status = SD_TransferByte(
+            SD_IDLE_BYTE,
+            &received);
     }
 
     if ((status == HAL_OK) &&
-        ((received & SD_DATA_RESPONSE_MASK) != SD_DATA_ACCEPTED))
+        ((received &
+          SD_DATA_RESPONSE_MASK) !=
+         SD_DATA_RESPONSE_ACCEPTED))
     {
         status = HAL_ERROR;
     }
 
     if (status == HAL_OK)
     {
-        status = SD_WaitReady(SD_BUSY_TIMEOUT_BYTES);
+        status = SD_WaitReady(
+            SD_BUSY_TIMEOUT_MS);
     }
 
     SD_Deselect();
 
     return status;
+}
+
+HAL_StatusTypeDef SD_Card_SetTransferSpeed(void)
+{
+    HAL_StatusTypeDef status;
+
+    if (!sd_transport_initialized)
+    {
+        return HAL_ERROR;
+    }
+
+    /*
+     * APB1 peripheral clock:
+     *     42 MHz
+     *
+     * Normal transfer clock:
+     *     42 MHz / 8 = 5.25 MHz
+     */
+    sd_spi_handle.Init.BaudRatePrescaler =
+        SPI_BAUDRATEPRESCALER_8;
+
+    status = HAL_SPI_Init(&sd_spi_handle);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    SD_Deselect();
+
+    return HAL_OK;
 }
