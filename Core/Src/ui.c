@@ -671,7 +671,7 @@ static void ui_draw_recorder_body(void)
                        COLOR_RED : COLOR_GREEN,
                        COLOR_BLACK);
 
-    Display_DrawString(188, 82, "CAPTURE.WAV", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(188, 82, "SELECTED WAV", COLOR_WHITE, COLOR_BLACK);
     Display_DrawString(188, 102, "RMS", COLOR_WHITE, COLOR_BLACK);
     ui_draw_uint(230, 102,
                  ui.recorder_status.rms_counts,
@@ -702,7 +702,7 @@ static void ui_draw_waveform_body(void)
                      UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
     Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
                      UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
-    Display_DrawString(8, 38, "CAPTURE.WAV", COLOR_CYAN, COLOR_BLACK);
+    Display_DrawString(8, 38, "SELECTED WAV", COLOR_CYAN, COLOR_BLACK);
 
     if ((data == NULL) || !data->valid)
     {

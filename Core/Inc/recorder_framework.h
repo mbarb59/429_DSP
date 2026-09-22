@@ -32,6 +32,8 @@ typedef struct
 
 void Recorder_FrameworkInit(void);
 
+/* NUMBERED_RECORDINGS_PATCH */
+FRESULT Recorder_StartFile(const char *filename);
 FRESULT Recorder_StartRaw(void);
 FRESULT Recorder_StopRaw(void);
 void Recorder_Process(void);

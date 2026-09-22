@@ -17,6 +17,7 @@
 #include "storage_framework.h"
 #include "filesystem_service.h"
 #include "recorder_framework.h"
+#include "recording_catalog.h"
 #include "wav_viewer.h"
 #include "wav_fft_viewer.h"
 #include "file_manager_framework.h"
@@ -133,6 +134,7 @@ static uint32_t analyzer_error_count;
 static uint32_t analyzer_last_display_ms;
 
 /* UI_RECORDER_CONTROLLER_PATCH */
+/* NUMBERED_RECORDINGS_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
 #define UI_RECORDER_STATUS_PERIOD_MS  100U
@@ -250,6 +252,7 @@ UART_SendString("LTDC INIT...\r\n");
     ui_recorder_last_status_ms = HAL_GetTick();
     UART_SendString("UI OK\r\n");
     Recorder_FrameworkInit();
+    RecordingCatalog_Init();
     WavViewer_Init();
     WavFftViewer_Init();
     FileManager_FrameworkInit();
@@ -3561,7 +3564,7 @@ static void UI_ProcessRecorderActions(void)
                 break;
             }
 
-            result = Recorder_StartRaw();
+            result = RecordingCatalog_StartNext();
 
             if (result != FR_OK)
             {
@@ -3615,7 +3618,7 @@ static void UI_ProcessRecorderActions(void)
                 break;
             }
 
-            result = WavViewer_Load("CAPTURE.WAV");
+            result = WavViewer_Load(RecordingCatalog_GetSelected());
             if (result == FR_OK)
             {
                 UI_ShowWaveform();
@@ -3643,7 +3646,7 @@ static void UI_ProcessRecorderActions(void)
                 break;
             }
 
-            result = WavFftViewer_Begin("CAPTURE.WAV");
+            result = WavFftViewer_Begin(RecordingCatalog_GetSelected());
             if (result == FR_OK)
             {
                 UI_ShowRecordedFft();

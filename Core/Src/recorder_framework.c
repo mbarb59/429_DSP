@@ -214,9 +214,15 @@ void Recorder_FrameworkInit(void)
     recorder_write_index = 0U;
 }
 
-FRESULT Recorder_StartRaw(void)
+/* NUMBERED_RECORDINGS_PATCH */
+FRESULT Recorder_StartFile(const char *filename)
 {
     FRESULT result;
+
+    if ((filename == NULL) || (filename[0] == '\0'))
+    {
+        return FR_INVALID_NAME;
+    }
 
     if (recorder_status.state !=
         RECORDER_STATE_IDLE)
@@ -236,7 +242,7 @@ FRESULT Recorder_StartRaw(void)
 
     result = f_open(
         &recorder_file,
-        RECORDER_RAW_FILENAME,
+        filename,
         FA_CREATE_ALWAYS | FA_WRITE);
 
     if (result != FR_OK)
@@ -271,7 +277,7 @@ FRESULT Recorder_StartRaw(void)
     recorder_status.last_result = FR_OK;
     recorder_read_index = 0U;
     recorder_write_index = 0U;
-    
+
     f_lseek(
         &recorder_file,
         44U);
@@ -281,6 +287,11 @@ FRESULT Recorder_StartRaw(void)
 
 
     return FR_OK;
+}
+
+FRESULT Recorder_StartRaw(void)
+{
+    return Recorder_StartFile(RECORDER_RAW_FILENAME);
 }
 
 FRESULT Recorder_StopRaw(void)

@@ -44,6 +44,7 @@ Core/Src/sd_spi.c \
 Core/Src/sd_card.c \
 Core/Src/storage_framework.c \
 Core/Src/recorder_framework.c \
+Core/Src/recording_catalog.c \
 Core/Src/wav_viewer.c \
 Core/Src/wav_fft_viewer.c \
 Core/Src/file_manager_framework.c \
