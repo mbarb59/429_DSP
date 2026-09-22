@@ -17,6 +17,8 @@
 #include "fft.h"
 #include "stmpe811.h"
 #include "uart.h"
+#include "wav_viewer.h"
+#include "wav_fft_viewer.h"
 
 #include "stm32f4xx_hal.h"
 
@@ -55,6 +57,11 @@
 #define UI_SCALE_PIXEL_THRESHOLD   4
 #define UI_TOUCH_POLL_MS           10U
 
+/* UI_RECORDER_LABEL_FIX */
+#define UI_REC_TAB_X               256
+#define UI_REC_TAB_WIDTH           64
+#define UI_REC_STATUS_REFRESH_MS   100U
+
 typedef enum
 {
     UI_BUTTON_NONE = 0,
@@ -62,8 +69,28 @@ typedef enum
     UI_BUTTON_FULL,
     UI_BUTTON_ZOOM_OUT,
     UI_BUTTON_ZOOM_IN,
-    UI_BUTTON_PEAK
+    UI_BUTTON_PEAK,
+    UI_BUTTON_RECORDER_BACK,
+    UI_BUTTON_RECORD_5,
+    UI_BUTTON_RECORD_STOP,
+    UI_BUTTON_VIEW_WAVEFORM,
+    UI_BUTTON_VIEW_SPECTRUM,
+    UI_BUTTON_WAVEFORM_BACK,
+    UI_BUTTON_WAVEFORM_RELOAD,
+    UI_BUTTON_FFT_BACK,
+    UI_BUTTON_FFT_PREVIOUS,
+    UI_BUTTON_FFT_NEXT,
+    UI_BUTTON_FFT_FULL,
+    UI_BUTTON_FFT_PEAK
 } UI_Button;
+
+typedef enum
+{
+    UI_MODE_ANALYZER = 0,
+    UI_MODE_RECORDER,
+    UI_MODE_WAVEFORM,
+    UI_MODE_RECORDED_FFT
+} UI_Mode;
 
 typedef struct
 {
@@ -73,6 +100,11 @@ typedef struct
     bool dragging;
     bool graph_dirty;
     bool controls_dirty;
+
+    UI_Mode mode;
+    UI_Action pending_action;
+    UI_RecorderStatus recorder_status;
+    uint32_t last_recorder_draw_ms;
 
     uint32_t first_bin;
     uint32_t visible_bins;
@@ -90,6 +122,13 @@ static UI_State ui;
 
 static void ui_draw_controls(void);
 static void ui_draw_status(void);
+static void ui_draw_recorder_body(void);
+static void ui_draw_waveform_body(void);
+static void ui_draw_uint(
+    int32_t x,
+    int32_t y,
+    uint32_t value,
+    uint16_t color);
 static void ui_draw_grid(void);
 static void ui_draw_spectrum_trace(void);
 static void ui_draw_peak_marker(void);
@@ -124,6 +163,19 @@ void UI_Init(void)
     ui.dragging = false;
     ui.graph_dirty = true;
     ui.controls_dirty = true;
+    ui.mode = UI_MODE_ANALYZER;
+    ui.pending_action = UI_ACTION_NONE;
+    ui.recorder_status.recorder_state = 0U;
+    ui.recorder_status.captured_samples = 0U;
+    ui.recorder_status.queued_bytes = 0U;
+    ui.recorder_status.dropped_samples = 0U;
+    ui.recorder_status.write_errors = 0U;
+    ui.recorder_status.dma_overruns = 0U;
+    ui.recorder_status.rms_counts = 0U;
+    ui.recorder_status.clip_count = 0U;
+    ui.recorder_status.clipping = false;
+    ui.recorder_status.capture_active = false;
+    ui.last_recorder_draw_ms = HAL_GetTick();
 
     ui.first_bin = UI_FIRST_USABLE_BIN;
     ui.visible_bins = ui_full_visible_bins();
@@ -158,6 +210,20 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_WAVEFORM)
+    {
+        ui_draw_waveform_body();
+        ui.graph_dirty = false;
+        return;
+    }
+
+    if (ui.mode == UI_MODE_RECORDER)
+    {
+        ui_draw_recorder_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -202,6 +268,16 @@ void UI_ProcessTouch(void)
         return;
     }
 
+    /* UI_TOUCH_X_MIRROR_PATCH
+     *
+     * The calibrated touchscreen X axis is reversed relative to the
+     * 320-pixel landscape display. Convert it only in the UI layer.
+     */
+    if (touch.x < DISPLAY_WIDTH)
+    {
+        touch.x = (uint16_t)((DISPLAY_WIDTH - 1U) - touch.x);
+    }
+
     if (touch.pressed)
     {
         if (!ui.touch_active)
@@ -235,6 +311,91 @@ void UI_ProcessTouch(void)
 void UI_NotifySpectrumChanged(void)
 {
     ui.graph_dirty = true;
+}
+
+UI_Action UI_GetPendingAction(void)
+{
+    UI_Action action = ui.pending_action;
+    ui.pending_action = UI_ACTION_NONE;
+    return action;
+}
+
+void UI_SetRecorderStatus(
+    const UI_RecorderStatus *status)
+{
+    if (status == NULL)
+    {
+        return;
+    }
+
+    ui.recorder_status = *status;
+
+    if (ui.mode == UI_MODE_RECORDER)
+    {
+        ui.graph_dirty = true;
+    }
+}
+
+bool UI_IsRecorderScreen(void)
+{
+    return ui.mode == UI_MODE_RECORDER;
+}
+
+void UI_ShowWaveform(void)
+{
+    ui.mode = UI_MODE_WAVEFORM;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsWaveformScreen(void)
+{
+    return ui.mode == UI_MODE_WAVEFORM;
+}
+
+void UI_ShowRecordedFft(void)
+{
+    uint32_t largest = 0U;
+
+    ui.mode = UI_MODE_RECORDED_FFT;
+    ui.running = false;
+    ui_apply_full_span();
+
+    for (uint32_t bin = 1U; bin < FFT_GetBinCount(); bin++)
+    {
+        uint32_t magnitude = FFT_GetMagnitude(bin);
+
+        if (magnitude > largest)
+        {
+            largest = magnitude;
+        }
+    }
+
+    if (largest < UI_MIN_MAGNITUDE_MAX)
+    {
+        largest = UI_MIN_MAGNITUDE_MAX;
+    }
+    else if (largest < UI_MAX_MAGNITUDE_MAX)
+    {
+        largest += largest / 4U;
+    }
+
+    if (largest > UI_MAX_MAGNITUDE_MAX)
+    {
+        largest = UI_MAX_MAGNITUDE_MAX;
+    }
+
+    ui.magnitude_max = largest;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsRecordedFftScreen(void)
+{
+    return ui.mode == UI_MODE_RECORDED_FFT;
 }
 
 void UI_SetRunning(bool running)
@@ -303,6 +464,59 @@ static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
 
+    if (ui.mode == UI_MODE_RECORDED_FFT)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(192, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(80, 12, "PREV", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(144, 12, "NEXT", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(208, 12, "FULL", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(278, 12, "PEAK", COLOR_BLACK, COLOR_MAGENTA);
+        return;
+    }
+
+    if (ui.mode == UI_MODE_WAVEFORM)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(192, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(256, COLOR_DARK_GRAY, COLOR_GRAY);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(76, 12, "RELOAD", COLOR_BLACK, COLOR_GREEN);
+        return;
+    }
+
+    if (ui.mode == UI_MODE_RECORDER)
+    {
+        Display_FillRect(0,
+                         UI_CONTROL_TOP,
+                         DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT,
+                         COLOR_BLACK);
+
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_RED, COLOR_WHITE);
+        ui_draw_button(192, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
+
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(86, 12, "REC5", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(150, 12, "STOP", COLOR_BLACK, COLOR_RED);
+        Display_DrawString(214, 12, "WAVE", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(278, 12, "FFT", COLOR_BLACK, COLOR_MAGENTA);
+        return;
+    }
+
     Display_FillRect(0,
                      UI_CONTROL_TOP,
                      DISPLAY_WIDTH,
@@ -355,6 +569,196 @@ static void ui_draw_button(int32_t x,
                      UI_BUTTON_WIDTH,
                      UI_CONTROL_HEIGHT,
                      border_color);
+}
+
+static void ui_draw_uint(
+    int32_t x,
+    int32_t y,
+    uint32_t value,
+    uint16_t color)
+{
+    char buffer[11];
+    uint32_t index = sizeof(buffer) - 1U;
+
+    buffer[index] = '\0';
+
+    do
+    {
+        index--;
+        buffer[index] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+    while ((value != 0U) && (index != 0U));
+
+    Display_DrawString(x,
+                       y,
+                       &buffer[index],
+                       color,
+                       COLOR_BLACK);
+}
+
+static void ui_draw_recorder_body(void)
+{
+    const char *state_text = "UNKNOWN";
+    uint32_t elapsed_ms =
+        ui.recorder_status.captured_samples / 48U;
+
+    switch (ui.recorder_status.recorder_state)
+    {
+        case 0U:
+            state_text = "IDLE";
+            break;
+        case 1U:
+            state_text = "RECORDING";
+            break;
+        case 2U:
+            state_text = "STOPPING";
+            break;
+        case 3U:
+            state_text = "ERROR";
+            break;
+        default:
+            break;
+    }
+
+    Display_FillRect(UI_GRAPH_LEFT,
+                     UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH,
+                     UI_GRAPH_HEIGHT,
+                     COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT,
+                     UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH,
+                     UI_GRAPH_HEIGHT,
+                     COLOR_GRAY);
+
+    Display_DrawString(8, 42, "WAV RECORDER", COLOR_CYAN, COLOR_BLACK);
+    Display_DrawString(8, 62, "STATE", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(92, 62, state_text, COLOR_GREEN, COLOR_BLACK);
+
+    Display_DrawString(8, 82, "ELAPSED MS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 82, elapsed_ms, COLOR_YELLOW);
+
+    Display_DrawString(8, 102, "SAMPLES", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 102,
+                 ui.recorder_status.captured_samples,
+                 COLOR_YELLOW);
+
+    Display_DrawString(8, 122, "QUEUE", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 122,
+                 ui.recorder_status.queued_bytes,
+                 COLOR_YELLOW);
+
+    Display_DrawString(8, 142, "DROPPED", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 142,
+                 ui.recorder_status.dropped_samples,
+                 COLOR_YELLOW);
+
+    Display_DrawString(8, 162, "DMA OVR", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 162,
+                 ui.recorder_status.dma_overruns,
+                 COLOR_YELLOW);
+
+    Display_DrawString(8, 182, "WRITE ERR", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(92, 182,
+                 ui.recorder_status.write_errors,
+                 COLOR_YELLOW);
+
+    Display_DrawString(188, 62,
+                       ui.recorder_status.capture_active ?
+                       "CAPTURE ON" : "CAPTURE OFF",
+                       ui.recorder_status.capture_active ?
+                       COLOR_RED : COLOR_GREEN,
+                       COLOR_BLACK);
+
+    Display_DrawString(188, 82, "CAPTURE.WAV", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(188, 102, "RMS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(230, 102,
+                 ui.recorder_status.rms_counts,
+                 COLOR_YELLOW);
+
+    Display_DrawString(188, 122, "CLIP", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(230, 122,
+                       ui.recorder_status.clipping ? "YES" : "NO",
+                       ui.recorder_status.clipping ? COLOR_RED : COLOR_GREEN,
+                       COLOR_BLACK);
+
+    Display_DrawString(188, 142, "CLIP CNT", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(248, 142,
+                 ui.recorder_status.clip_count,
+                 ui.recorder_status.clipping ? COLOR_RED : COLOR_YELLOW);
+}
+
+static void ui_draw_waveform_body(void)
+{
+    const WavViewerData *data = WavViewer_GetData();
+    const int32_t wave_top = 88;
+    const int32_t wave_bottom = 204;
+    const int32_t center_y = (wave_top + wave_bottom) / 2;
+    const int32_t half_height = (wave_bottom - wave_top) / 2;
+    uint32_t peak;
+
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
+    Display_DrawString(8, 38, "CAPTURE.WAV", COLOR_CYAN, COLOR_BLACK);
+
+    if ((data == NULL) || !data->valid)
+    {
+        Display_DrawString(8, 60, "NO VALID WAV", COLOR_RED, COLOR_BLACK);
+        return;
+    }
+
+    Display_DrawString(8, 52, "RATE", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(44, 52, data->sample_rate, COLOR_YELLOW);
+    Display_DrawString(110, 52, "TIME MS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(164, 52, data->duration_ms, COLOR_YELLOW);
+    Display_DrawString(230, 52, "PEAK", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(266, 52, data->peak_absolute, COLOR_YELLOW);
+
+    Display_DrawLine(0, center_y, DISPLAY_WIDTH - 1,
+                     center_y, COLOR_DARK_GRAY);
+    Display_DrawRect(0, wave_top, DISPLAY_WIDTH,
+                     wave_bottom - wave_top + 1, COLOR_GRAY);
+
+    peak = data->peak_absolute;
+    if (peak == 0U)
+    {
+        peak = 1U;
+    }
+
+    for (uint32_t x = 0U; x < WAV_VIEWER_COLUMN_COUNT; x++)
+    {
+        int32_t minimum = data->minimum[x];
+        int32_t maximum = data->maximum[x];
+        int32_t y_min;
+        int32_t y_max;
+
+        if (minimum == INT16_MAX)
+        {
+            minimum = 0;
+        }
+        if (maximum == INT16_MIN)
+        {
+            maximum = 0;
+        }
+
+        y_min = center_y - (maximum * half_height) / (int32_t)peak;
+        y_max = center_y - (minimum * half_height) / (int32_t)peak;
+
+        if (y_min < wave_top)
+        {
+            y_min = wave_top;
+        }
+        if (y_max > wave_bottom)
+        {
+            y_max = wave_bottom;
+        }
+
+        Display_DrawLine((int32_t)x, y_min,
+                         (int32_t)x, y_max, COLOR_GREEN);
+    }
 }
 
 static void ui_draw_grid(void)
@@ -441,6 +845,69 @@ static void ui_draw_peak_marker(void)
 static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
+
+    if (ui.mode == UI_MODE_RECORDED_FFT)
+    {
+        const WavFftViewerInfo *info = WavFftViewer_GetInfo();
+
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_GRAY);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "SEG", COLOR_WHITE, COLOR_BLACK);
+
+        if ((info != NULL) && info->active)
+        {
+            ui_draw_uint(28, UI_STATUS_TOP + 8,
+                         info->segment_index + 1U, COLOR_YELLOW);
+            Display_DrawString(58, UI_STATUS_TOP + 8,
+                               "/", COLOR_WHITE, COLOR_BLACK);
+            ui_draw_uint(68, UI_STATUS_TOP + 8,
+                         info->segment_count, COLOR_YELLOW);
+            Display_DrawString(118, UI_STATUS_TOP + 8,
+                               "MS", COLOR_WHITE, COLOR_BLACK);
+            ui_draw_uint(138, UI_STATUS_TOP + 8,
+                         info->segment_time_ms, COLOR_YELLOW);
+            Display_DrawString(210, UI_STATUS_TOP + 8,
+                               "PEAK", COLOR_WHITE, COLOR_BLACK);
+            ui_draw_uint(246, UI_STATUS_TOP + 8,
+                         FFT_GetPeakFrequency(), COLOR_GREEN);
+        }
+        return;
+    }
+
+    if (ui.mode == UI_MODE_WAVEFORM)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_GRAY);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "CAPTURE.WAV WAVEFORM",
+                           COLOR_WHITE, COLOR_BLACK);
+        return;
+    }
+
+    if (ui.mode == UI_MODE_RECORDER)
+    {
+        Display_FillRect(0,
+                         UI_STATUS_TOP,
+                         DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         COLOR_BLACK);
+        Display_DrawRect(0,
+                         UI_STATUS_TOP,
+                         DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         COLOR_GRAY);
+        Display_DrawString(4,
+                           UI_STATUS_TOP + 8,
+                           "RECORDER MODE",
+                           COLOR_WHITE,
+                           COLOR_BLACK);
+        return;
+    }
     uint32_t last_bin = ui_last_visible_bin();
     int32_t view_x0;
     int32_t view_x1;
@@ -490,6 +957,22 @@ static void ui_draw_status(void)
                              COLOR_GREEN);
         }
     }
+
+    Display_FillRect(UI_REC_TAB_X,
+                     UI_STATUS_TOP + 1,
+                     UI_REC_TAB_WIDTH - 1,
+                     UI_STATUS_HEIGHT - 2,
+                     COLOR_RED);
+    Display_DrawRect(UI_REC_TAB_X,
+                     UI_STATUS_TOP,
+                     UI_REC_TAB_WIDTH,
+                     UI_STATUS_HEIGHT,
+                     COLOR_WHITE);
+    Display_DrawString(UI_REC_TAB_X + 22,
+                       UI_STATUS_TOP + 8,
+                       "REC",
+                       COLOR_WHITE,
+                       COLOR_RED);
 }
 
 static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
@@ -499,26 +982,85 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
         return UI_BUTTON_NONE;
     }
 
+    if (ui.mode == UI_MODE_RECORDED_FFT)
+    {
+        if (x < 64U)
+        {
+            return UI_BUTTON_FFT_BACK;
+        }
+        if (x < 128U)
+        {
+            return UI_BUTTON_FFT_PREVIOUS;
+        }
+        if (x < 192U)
+        {
+            return UI_BUTTON_FFT_NEXT;
+        }
+        if (x < 256U)
+        {
+            return UI_BUTTON_FFT_FULL;
+        }
+        if (x < DISPLAY_WIDTH)
+        {
+            return UI_BUTTON_FFT_PEAK;
+        }
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_WAVEFORM)
+    {
+        if (x < 64U)
+        {
+            return UI_BUTTON_WAVEFORM_BACK;
+        }
+        if (x < 128U)
+        {
+            return UI_BUTTON_WAVEFORM_RELOAD;
+        }
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_RECORDER)
+    {
+        if (x < 64U)
+        {
+            return UI_BUTTON_RECORDER_BACK;
+        }
+        if (x < 128U)
+        {
+            return UI_BUTTON_RECORD_5;
+        }
+        if (x < 192U)
+        {
+            return UI_BUTTON_RECORD_STOP;
+        }
+        if (x < 256U)
+        {
+            return UI_BUTTON_VIEW_WAVEFORM;
+        }
+        if (x < DISPLAY_WIDTH)
+        {
+            return UI_BUTTON_VIEW_SPECTRUM;
+        }
+        return UI_BUTTON_NONE;
+    }
+
     if (x < 64U)
     {
         return UI_BUTTON_RUN_STOP;
     }
-
     if (x < 128U)
     {
         return UI_BUTTON_FULL;
     }
-
     if (x < 192U)
     {
         return UI_BUTTON_ZOOM_OUT;
     }
-
     if (x < 256U)
     {
         return UI_BUTTON_ZOOM_IN;
     }
-
     if (x < DISPLAY_WIDTH)
     {
         return UI_BUTTON_PEAK;
@@ -560,6 +1102,78 @@ static void ui_execute_button(UI_Button button)
             UART_SendString("UI CENTER PEAK\r\n");
             break;
 
+        case UI_BUTTON_RECORDER_BACK:
+            ui.mode = UI_MODE_ANALYZER;
+            ui.graph_dirty = true;
+            ui.controls_dirty = true;
+            Display_Clear(COLOR_BLACK);
+            UART_SendString("UI ANALYZER SCREEN\r\n");
+            break;
+
+        case UI_BUTTON_RECORD_5:
+            ui.pending_action = UI_ACTION_RECORD_5;
+            UART_SendString("UI RECORD 5 REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_RECORD_STOP:
+            ui.pending_action = UI_ACTION_RECORD_STOP;
+            UART_SendString("UI RECORD STOP REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_VIEW_WAVEFORM:
+            ui.pending_action = UI_ACTION_VIEW_WAVEFORM;
+            UART_SendString("UI WAVEFORM REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_VIEW_SPECTRUM:
+            ui.pending_action = UI_ACTION_VIEW_SPECTRUM;
+            UART_SendString("UI RECORDED SPECTRUM REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FFT_BACK:
+            ui.mode = UI_MODE_RECORDER;
+            ui.graph_dirty = true;
+            ui.controls_dirty = true;
+            ui.pending_action = UI_ACTION_FFT_BACK;
+            Display_Clear(COLOR_BLACK);
+            UART_SendString("UI RECORDED FFT BACK REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FFT_PREVIOUS:
+            ui.pending_action = UI_ACTION_FFT_PREVIOUS;
+            UART_SendString("UI RECORDED FFT PREV REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FFT_NEXT:
+            ui.pending_action = UI_ACTION_FFT_NEXT;
+            UART_SendString("UI RECORDED FFT NEXT REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FFT_FULL:
+            ui_apply_full_span();
+            ui.graph_dirty = true;
+            UART_SendString("UI RECORDED FFT FULL\r\n");
+            break;
+
+        case UI_BUTTON_FFT_PEAK:
+            ui_center_on_peak();
+            ui.graph_dirty = true;
+            UART_SendString("UI RECORDED FFT PEAK\r\n");
+            break;
+
+        case UI_BUTTON_WAVEFORM_BACK:
+            ui.mode = UI_MODE_RECORDER;
+            ui.graph_dirty = true;
+            ui.controls_dirty = true;
+            Display_Clear(COLOR_BLACK);
+            UART_SendString("UI RECORDER SCREEN\r\n");
+            break;
+
+        case UI_BUTTON_WAVEFORM_RELOAD:
+            ui.pending_action = UI_ACTION_VIEW_WAVEFORM;
+            UART_SendString("UI WAVEFORM RELOAD REQUEST\r\n");
+            break;
+
         case UI_BUTTON_NONE:
         default:
             break;
@@ -592,7 +1206,8 @@ static void ui_handle_touch_move(const STMPE811_TouchData *touch)
         ui.dragging = true;
     }
 
-    if ((ui.touch_start_y >= UI_GRAPH_TOP) &&
+    if ((ui.mode == UI_MODE_ANALYZER) &&
+        (ui.touch_start_y >= UI_GRAPH_TOP) &&
         (ui.touch_start_y <= UI_GRAPH_BOTTOM))
     {
         if ((delta_x >= UI_PAN_PIXEL_THRESHOLD) ||
@@ -616,11 +1231,21 @@ static void ui_handle_touch_move(const STMPE811_TouchData *touch)
 
 static void ui_handle_touch_up(void)
 {
-    if (ui.touch_start_y < UI_CONTROL_HEIGHT)
+    if ((ui.mode == UI_MODE_ANALYZER) &&
+        (ui.touch_start_y >= UI_STATUS_TOP) &&
+        (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.touch_start_x >= UI_REC_TAB_X))
     {
-        UI_Button button;
-
-        button = ui_hit_test_button(
+        ui.mode = UI_MODE_RECORDER;
+        ui.running = false;
+        ui.graph_dirty = true;
+        ui.controls_dirty = true;
+        Display_Clear(COLOR_BLACK);
+        UART_SendString("UI RECORDER SCREEN\r\n");
+    }
+    else if (ui.touch_start_y < UI_CONTROL_HEIGHT)
+    {
+        UI_Button button = ui_hit_test_button(
             ui.touch_start_x,
             ui.touch_start_y);
 

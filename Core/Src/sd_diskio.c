@@ -2,8 +2,28 @@
 #include "storage_framework.h"
 #include "sd_card.h"
 #include <stddef.h>
+#include <string.h>
 
 static DSTATUS disk_state = STA_NOINIT;
+
+static SD_DiskIoWriteStats sd_diskio_write_stats;
+
+void SD_DiskIo_ResetWriteStats(void)
+{
+    memset(
+        &sd_diskio_write_stats,
+        0,
+        sizeof(sd_diskio_write_stats));
+}
+
+void SD_DiskIo_GetWriteStats(
+    SD_DiskIoWriteStats *stats)
+{
+    if (stats != NULL)
+    {
+        *stats = sd_diskio_write_stats;
+    }
+}
 
 DSTATUS disk_initialize(BYTE pdrv)
 {
@@ -68,6 +88,26 @@ DRESULT disk_write(
         (count == 0U))
     {
         return RES_PARERR;
+    }
+
+    sd_diskio_write_stats.write_calls++;
+    sd_diskio_write_stats.total_sectors +=
+        (uint32_t)count;
+
+    if (count == 1U)
+    {
+        sd_diskio_write_stats.single_sector_calls++;
+    }
+    else
+    {
+        sd_diskio_write_stats.multi_sector_calls++;
+    }
+
+    if ((uint32_t)count >
+        sd_diskio_write_stats.largest_sector_count)
+    {
+        sd_diskio_write_stats.largest_sector_count =
+            (uint32_t)count;
     }
 
     status = Storage_WriteSectors(

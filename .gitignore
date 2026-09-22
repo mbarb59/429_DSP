@@ -1,6 +1,31 @@
+# Build artifacts
+build/
 *.o
-*.d
-build/*.elf
-build/*.bin
-build/*.map
+*.elf
+*.bin
+*.map
 build.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Patch backups
+*.before_*
+*.bak
+*.old
+
+# Editor files
+*~
+*.swp
+*.swo
+
+# Generated recordings
+*.WAV
+*.wav
+
+# Local archives and temporary bundles
+project_archive/
+sd_manager_backup_*/
+sd_patch_backup_*/
+storage_framework_bundle/

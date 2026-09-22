@@ -1,18 +1,18 @@
 #ifndef RECORDER_FRAMEWORK_H
 #define RECORDER_FRAMEWORK_H
 
+#include "ff.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RECORDER_DEFAULT_SAMPLE_RATE_HZ  20000U
-#define RECORDER_CHANNEL_COUNT               1U
-#define RECORDER_BITS_PER_SAMPLE            16U
-#define RECORDER_WRITE_CHUNK_BYTES         4096U
+#define RECORDER_SAMPLE_RATE_HZ     48000U
+#define RECORDER_QUEUE_SIZE_BYTES   (64U * 1024U)
+#define RECORDER_WRITE_BLOCK_BYTES  4096U
 
 typedef enum
 {
-    RECORDER_STATE_STOPPED = 0,
-    RECORDER_STATE_STARTING,
+    RECORDER_STATE_IDLE = 0,
     RECORDER_STATE_RECORDING,
     RECORDER_STATE_STOPPING,
     RECORDER_STATE_ERROR
@@ -21,19 +21,26 @@ typedef enum
 typedef struct
 {
     RecorderState state;
-    uint32_t sample_rate_hz;
-    uint32_t samples_captured;
-    uint32_t bytes_queued;
-    uint32_t bytes_written;
-    uint32_t queue_high_water;
-    uint32_t dropped_buffers;
+    FRESULT last_result;
+    uint32_t captured_samples;
+    uint32_t queued_bytes;
+    uint32_t queue_high_water_bytes;
+    uint32_t written_bytes;
+    uint32_t dropped_samples;
     uint32_t write_errors;
-    char filename[13];
 } RecorderStatus;
 
 void Recorder_FrameworkInit(void);
+
+FRESULT Recorder_StartRaw(void);
+FRESULT Recorder_StopRaw(void);
 void Recorder_Process(void);
-const RecorderStatus *Recorder_GetStatus(void);
-bool Recorder_IsActive(void);
+
+bool Recorder_SubmitAdcSamples(
+    const uint16_t *samples,
+    uint32_t sample_count);
+
+void Recorder_GetStatus(
+    RecorderStatus *status);
 
 #endif

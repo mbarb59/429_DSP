@@ -17,9 +17,17 @@
 #include "storage_framework.h"
 #include "filesystem_service.h"
 #include "recorder_framework.h"
+#include "wav_viewer.h"
+#include "wav_fft_viewer.h"
 #include "file_manager_framework.h"
 #include "sd_raw_test.h"
+#include "sd_benchmark.h"
+#include "ff.h"
 
+
+#include <stdint.h>
+#include <string.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -42,6 +50,8 @@ static void SystemClock_Config(void);
 static void Error_Handler(void);
 static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
+static void UI_ProcessRecorderActions(void);
+static void UI_UpdateRecorderStatus(void);
 static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
 static void Console_Poll(void);
@@ -58,9 +68,16 @@ static void Console_RunSdSoftwareCmd58(void);
 static void Console_RunSdCsTest(void);
 static void Console_RunSdInit(void);
 static void Console_RunSdReadZero(void);
+static void Console_RunSdDelete(
+    const char *filename);
 static void Console_PrintFsResult(
     const char *operation,
     FRESULT result);
+static uint16_t Console_ReadLe16(
+    const uint8_t *data);
+static uint32_t Console_ReadLe32(
+    const uint8_t *data);
+static void Console_RunWavInfo(void);
 static void Console_RunFsMount(void);
 static void Console_RunFsList(void);
 static void Console_RunFsFree(void);
@@ -72,6 +89,18 @@ static void Console_DumpSamples(uint32_t count);
 static void Console_RunSdRawTest(void);
 static void Console_RunSdLoopback(void);
 static void Console_RunSdDiTest(void);
+static void Console_RunSdBenchmark(void);
+static const char *Recorder_StateText(
+    RecorderState state);
+static void GenerateAdcTone1500Hz(
+    uint16_t *destination,
+    uint32_t sample_count,
+    uint32_t *phase);
+static void Console_RunRecTone5(void);
+static void Console_RunRec5(void);
+static void Console_RunRecStart(void);
+static void Console_RunRecStop(void);
+static void Console_RunRecStatus(void);
 static int32_t Spectrum_BinToX(uint32_t bin);
 static int32_t Spectrum_MagnitudeToY(uint32_t magnitude);
 static void Spectrum_SetScale(uint32_t new_scale);
@@ -102,6 +131,12 @@ static AnalyzerState analyzer_state = ANALYZER_STOPPED;
 static uint32_t analyzer_frame_count;
 static uint32_t analyzer_error_count;
 static uint32_t analyzer_last_display_ms;
+
+/* UI_RECORDER_CONTROLLER_PATCH */
+/* UI_WAVE_VIEWER_PATCH */
+/* UI_RECORDED_FFT_PATCH */
+#define UI_RECORDER_STATUS_PERIOD_MS  100U
+static uint32_t ui_recorder_last_status_ms;
 
 static uint32_t spectrum_max_magnitude =
     SPECTRUM_SCALE_DEFAULT;
@@ -212,8 +247,11 @@ UART_SendString("LTDC INIT...\r\n");
 
     UART_SendString("ADC/DMA OK\r\n");
     UI_Init();
+    ui_recorder_last_status_ms = HAL_GetTick();
     UART_SendString("UI OK\r\n");
     Recorder_FrameworkInit();
+    WavViewer_Init();
+    WavFftViewer_Init();
     FileManager_FrameworkInit();
 
     UART_SendString("Type help for commands.\r\n");
@@ -223,8 +261,11 @@ UART_SendString("LTDC INIT...\r\n");
     {
         Console_Poll();
         UI_ProcessTouch();
+        UI_ProcessRecorderActions();
         Analyzer_Process();
+        Capture_ProcessRecorder();
         Recorder_Process();
+        UI_UpdateRecorderStatus();
     }
 }
 
@@ -361,12 +402,44 @@ else if (strcmp(command, "sdread0") == 0)
             Console_RunFsMount();
         }
     }
+    else if (strcmp(command, "wavinfo") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunWavInfo();
+        }
+    }
     else if (strcmp(command, "sdls") == 0)
     {
         if (Analyzer_RequireStopped())
         {
             Console_RunFsList();
         }
+    }
+    else if ((strncmp(command, "sddel", 5U) == 0) &&
+         ((command[5] == '\0') ||
+          (command[5] == ' ') ||
+          (command[5] == '\t')))
+    {
+    const char *filename = &command[5];
+
+    while ((*filename == ' ') ||
+           (*filename == '\t'))
+    {
+        filename++;
+    }
+
+    if (Analyzer_RequireStopped())
+    {
+        Console_RunSdDelete(filename);
+    }
+    }
+    else if (strcmp(command, "sdbench") == 0)
+    {
+       if (Analyzer_RequireStopped())
+       {
+           Console_RunSdBenchmark();
+       }
     }
     else if (strcmp(command, "sdfree") == 0)
     {
@@ -381,6 +454,35 @@ else if (strcmp(command, "sdread0") == 0)
         {
             Console_RunFsFileTest();
         }
+    }
+    else if (strcmp(command, "rectone5") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRecTone5();
+        }
+    }
+    else if (strcmp(command, "rec5") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRec5();
+        }
+    }
+    else if (strcmp(command, "recstart") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRecStart();
+        }
+    }
+    else if (strcmp(command, "recstop") == 0)
+    {
+        Console_RunRecStop();
+    }
+    else if (strcmp(command, "recstatus") == 0)
+    {
+        Console_RunRecStatus();
     }
     else if (strcmp(command, "sdunmount") == 0)
     {
@@ -879,6 +981,14 @@ static void Console_PrintHelp(void)
 	"sddi        - Hold SD DI high, low, then high\r\n"
 	"sdloop      - Test SPI2 with PB15 connected to PB14\r\n"
         "sdinit      - Initialize SD card and show card information\r\n"
+	"sdbench     - Benchmark SD write performance\r\n"
+	"sddel       - Delete a specified file: sddel <filename>\r\n"
+	"wavinfo     - Validate CAPTURE.WAV header and size\r\n"
+        "rectone5    - Create five-second 1500 Hz test WAV\r\n"
+    "rec5        - Record five seconds to CAPTURE.WAV\r\n"
+        "recstart    - Start WAV recorder\r\n"
+        "recstop     - Stop and finalize WAV recorder\r\n"
+        "recstatus   - Show WAV recorder status\r\n"
         "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
         "fft1024     - Set capture and FFT size to 1024\r\n"
@@ -1562,6 +1672,428 @@ static void Console_RunSdLoopback(void)
         UART_SendString("FAIL\r\n");
     }
 }
+static const char *Recorder_StateText(
+    RecorderState state)
+{
+    switch (state)
+    {
+        case RECORDER_STATE_IDLE:
+            return "IDLE";
+
+        case RECORDER_STATE_RECORDING:
+            return "RECORDING";
+
+        case RECORDER_STATE_STOPPING:
+            return "STOPPING";
+
+        case RECORDER_STATE_ERROR:
+            return "ERROR";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+/*
+ * RECTONE5_SYNTHETIC_WAV
+ *
+ * At 48000 samples per second, 1500 Hz is exactly 32 samples
+ * per cycle. Samples are generated in unsigned 12-bit ADC form
+ * so the existing recorder conversion produces signed PCM.
+ */
+static void GenerateAdcTone1500Hz(
+    uint16_t *destination,
+    uint32_t sample_count,
+    uint32_t *phase)
+{
+    static const int16_t sine_table[32] =
+    {
+           0,  195,  383,  556,
+         707,  831,  924,  981,
+        1000,  981,  924,  831,
+         707,  556,  383,  195,
+           0, -195, -383, -556,
+        -707, -831, -924, -981,
+       -1000, -981, -924, -831,
+        -707, -556, -383, -195
+    };
+
+    uint32_t current_phase = *phase;
+
+    for (uint32_t index = 0U;
+         index < sample_count;
+         index++)
+    {
+        destination[index] =
+            (uint16_t)(2048 + sine_table[current_phase]);
+
+        current_phase++;
+
+        if (current_phase >= 32U)
+        {
+            current_phase = 0U;
+        }
+    }
+
+    *phase = current_phase;
+}
+
+static void Console_RunRecTone5(void)
+{
+    const uint32_t block_samples =
+        CAPTURE_SAMPLE_COUNT_MAX;
+    const uint32_t target_samples =
+        RECORDER_SAMPLE_RATE_HZ * 5U;
+
+    FRESULT result;
+    RecorderStatus status;
+    uint32_t generated_samples = 0U;
+    uint32_t phase = 0U;
+
+    UART_SendString("Five Second 1500 Hz WAV Test\r\n");
+    UART_SendString("----------------------------\r\n");
+    UART_SendString("File        = CAPTURE.WAV\r\n");
+    UART_SendString("Frequency   = 1500 Hz\r\n");
+    UART_SendString("Sample Rate = 48000 SPS\r\n");
+    UART_SendString("Duration    = 5 seconds\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Continuous ADC recording is active\r\n");
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    Recorder_GetStatus(&status);
+
+    if (status.state != RECORDER_STATE_IDLE)
+    {
+        UART_SendString("Recorder is not idle\r\n");
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    result = Recorder_StartRaw();
+
+    UART_SendString("FatFs Result= ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+
+    if (result != FR_OK)
+    {
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    while (generated_samples < target_samples)
+    {
+        uint32_t remaining_samples =
+            target_samples - generated_samples;
+        uint32_t current_block = block_samples;
+
+        if (current_block > remaining_samples)
+        {
+            current_block = remaining_samples;
+        }
+
+        GenerateAdcTone1500Hz(
+            sampleBuffer,
+            current_block,
+            &phase);
+
+        if (!Recorder_SubmitAdcSamples(
+                sampleBuffer,
+                current_block))
+        {
+            UART_SendString("Recorder queue submission failed\r\n");
+            (void)Recorder_StopRaw();
+
+            do
+            {
+                Recorder_Process();
+                Recorder_GetStatus(&status);
+            }
+            while ((status.state == RECORDER_STATE_STOPPING) ||
+                   (status.state == RECORDER_STATE_RECORDING));
+
+            UART_SendString("Result      = FAIL\r\n");
+            return;
+        }
+
+        generated_samples += current_block;
+        Recorder_Process();
+    }
+
+    result = Recorder_StopRaw();
+
+    if (result != FR_OK)
+    {
+        UART_SendString("Stop Result = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    do
+    {
+        Recorder_Process();
+        Recorder_GetStatus(&status);
+    }
+    while ((status.state == RECORDER_STATE_STOPPING) ||
+           (status.state == RECORDER_STATE_RECORDING));
+
+    UART_SendString("Generated   = ");
+    UART_SendDec(generated_samples);
+    UART_SendString(" samples\r\n");
+
+    UART_SendString("Written     = ");
+    UART_SendDec(status.written_bytes);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Dropped     = ");
+    UART_SendDec(status.dropped_samples);
+    UART_SendString(" samples\r\n");
+
+    UART_SendString("Write Errors= ");
+    UART_SendDec(status.write_errors);
+    UART_SendString("\r\n");
+
+    UART_SendString("Result      = ");
+
+    if ((status.state == RECORDER_STATE_IDLE) &&
+        (status.captured_samples == target_samples) &&
+        (status.written_bytes == (target_samples * 2U)) &&
+        (status.dropped_samples == 0U) &&
+        (status.write_errors == 0U) &&
+        (status.last_result == FR_OK))
+    {
+        UART_SendString("PASS\r\n");
+    }
+    else
+    {
+        UART_SendString("FAIL\r\n");
+    }
+}
+
+/* REC5_CONSOLE_INTEGRATION */
+static void Console_RunRec5(void)
+{
+    FRESULT result;
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Continuous recording is already active\r\n");
+        return;
+    }
+
+    result = Recorder_StartRaw();
+
+    UART_SendString("Five Second WAV Recorder\r\n");
+    UART_SendString("------------------------\r\n");
+    UART_SendString("File        = CAPTURE.WAV\r\n");
+    UART_SendString("FatFs Result= ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+
+    if (result != FR_OK)
+    {
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    if (!Capture_StartRecorder(5U))
+    {
+        UART_SendString("Continuous DMA start failed\r\n");
+        (void)Recorder_StopRaw();
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    UART_SendString("Sample Rate = ");
+    UART_SendDec(RECORDER_SAMPLE_RATE_HZ);
+    UART_SendString(" SPS\r\n");
+    UART_SendString("Duration    = 5 seconds\r\n");
+    UART_SendString("Target      = 240000 samples\r\n");
+    UART_SendString("Recording started; use recstop to stop early\r\n");
+    UART_SendString("Result      = PASS\r\n");
+}
+
+static void Console_RunRecStart(void)
+{
+    FRESULT result;
+
+    result = Recorder_StartRaw();
+
+    UART_SendString("Raw Recorder Start\r\n");
+    UART_SendString("------------------\r\n");
+    UART_SendString("File        = CAPTURE.WAV\r\n");
+    UART_SendString("FatFs Result= ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+    UART_SendString("Result      = ");
+    UART_SendString(
+        (result == FR_OK) ?
+        "PASS\r\n" :
+        "FAIL\r\n");
+}
+
+static void Console_RunRecStop(void)
+{
+    FRESULT result;
+
+    if (Capture_IsRecorderActive())
+    {
+        Capture_StopRecorder();
+        result = FR_OK;
+    }
+    else
+    {
+        result = Recorder_StopRaw();
+    }
+
+    UART_SendString("WAV Recorder Stop Requested\r\n");
+    UART_SendString("FatFs Result= ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+    UART_SendString("Run recstatus until State = IDLE\r\n");
+}
+
+static void Console_RunRecStatus(void)
+{
+    RecorderStatus status;
+
+    Recorder_GetStatus(&status);
+
+    UART_SendString("Raw Recorder Status\r\n");
+    UART_SendString("-------------------\r\n");
+    UART_SendString("State           = ");
+    UART_SendString(
+        Recorder_StateText(status.state));
+    UART_SendString("\r\n");
+    UART_SendString("Captured Samples= ");
+    UART_SendDec(status.captured_samples);
+    UART_SendString("\r\n");
+    UART_SendString("Queued Bytes    = ");
+    UART_SendDec(status.queued_bytes);
+    UART_SendString("\r\n");
+    UART_SendString("Queue High Water= ");
+    UART_SendDec(status.queue_high_water_bytes);
+    UART_SendString("\r\n");
+    UART_SendString("Written Bytes   = ");
+    UART_SendDec(status.written_bytes);
+    UART_SendString("\r\n");
+    UART_SendString("Dropped Samples = ");
+    UART_SendDec(status.dropped_samples);
+    UART_SendString("\r\n");
+    UART_SendString("Write Errors    = ");
+    UART_SendDec(status.write_errors);
+    UART_SendString("\r\n");
+    UART_SendString("Capture Active  = ");
+    UART_SendString(Capture_IsRecorderActive() ? "YES\r\n" : "NO\r\n");
+
+    UART_SendString("DMA Overruns    = ");
+    UART_SendDec(Capture_GetRecorderOverruns());
+    UART_SendString("\r\n");
+
+    UART_SendString("FatFs Result    = ");
+    UART_SendDec((uint32_t)status.last_result);
+    UART_SendString("\r\n");
+}
+
+static void Console_RunSdBenchmark(void)
+{
+    SD_BenchmarkResult result;
+    FRESULT fat_result;
+
+    UART_SendString("SD Write Benchmark\r\n");
+    UART_SendString("------------------\r\n");
+    UART_SendString("Temporary File  = BENCH.BIN\r\n");
+    UART_SendString("Do not remove power during test\r\n");
+
+    fat_result = SD_Benchmark_Run(&result);
+
+    UART_SendString("FatFs Result    = ");
+    UART_SendDec((uint32_t)fat_result);
+    UART_SendString("\r\n");
+
+    UART_SendString("Block Size      = ");
+    UART_SendDec(result.block_size);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Requested Bytes = ");
+    UART_SendDec(result.requested_bytes);
+    UART_SendString("\r\n");
+
+    UART_SendString("Written Bytes   = ");
+    UART_SendDec(result.written_bytes);
+    UART_SendString("\r\n");
+
+    UART_SendString("f_write Calls   = ");
+    UART_SendDec(result.write_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("Write Time      = ");
+    UART_SendDec(result.elapsed_ms);
+    UART_SendString(" ms\r\n");
+
+    UART_SendString("Sync Time       = ");
+    UART_SendDec(result.sync_ms);
+    UART_SendString(" ms\r\n");
+
+    UART_SendString("Worst Write     = ");
+    UART_SendDec(result.worst_write_ms);
+    UART_SendString(" ms\r\n");
+
+    UART_SendString("Average Rate    = ");
+    UART_SendDec(result.average_bytes_per_second);
+    UART_SendString(" bytes/s\r\n");
+
+    UART_SendString("Disk Write Calls= ");
+    UART_SendDec(result.disk_write_calls);
+    UART_SendString("\r\n");
+
+    UART_SendString("Single Writes   = ");
+    UART_SendDec(result.single_sector_writes);
+    UART_SendString("\r\n");
+
+    UART_SendString("Multi Writes    = ");
+    UART_SendDec(result.multi_sector_writes);
+    UART_SendString("\r\n");
+
+    UART_SendString("Total Sectors   = ");
+    UART_SendDec(result.total_sectors_written);
+    UART_SendString("\r\n");
+
+    UART_SendString("Largest Count   = ");
+    UART_SendDec(result.largest_sector_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("Verified Size   = ");
+    UART_SendDec(result.verified_file_size);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Verified Bytes  = ");
+    UART_SendDec(result.verified_bytes);
+    UART_SendString("\r\n");
+
+    UART_SendString("Mismatches      = ");
+    UART_SendDec(result.mismatch_count);
+    UART_SendString("\r\n");
+
+    if (result.mismatch_count != 0U)
+    {
+        UART_SendString("First Mismatch  = ");
+        UART_SendDec(result.first_mismatch_offset);
+        UART_SendString("\r\n");
+    }
+
+    UART_SendString("Result          = ");
+    UART_SendString(
+        (fat_result == FR_OK) ?
+        "PASS\r\n" :
+        "FAIL\r\n");
+}
 static void Console_RunDmaCapture(void)
 {
     uint32_t deadline;
@@ -1584,6 +2116,19 @@ static void Console_RunDmaCapture(void)
     {
         UART_SendString("DMA capture error\r\n");
         return;
+    }
+
+    if (Recorder_SubmitAdcSamples(
+            sampleBuffer,
+            sampleCount))
+    {
+        UART_SendString(
+            "Recorder accepted samples\r\n");
+    }
+    else
+    {
+        UART_SendString(
+            "Recorder not active\r\n");
     }
 
     UART_SendString("DMA capture complete\r\n");
@@ -1858,6 +2403,69 @@ static void Console_RunFsFileTest(void)
 
     result = FileSystem_VerifiedFileTest();
     Console_PrintFsResult("File Test", result);
+}
+static void Console_RunSdDelete(
+    const char *filename)
+{
+    FRESULT result;
+
+    UART_SendString("Delete File\r\n");
+    UART_SendString("-----------\r\n");
+
+    if ((filename == NULL) ||
+        (filename[0] == '\0'))
+    {
+        UART_SendString(
+            "Usage: sddel <filename>\r\n");
+        UART_SendString(
+            "Example: sddel CAPTURE.WAV\r\n");
+        return;
+    }
+
+    /*
+     * Keep this console command limited to files in the root
+     * directory. Reject paths and directory traversal.
+     */
+    if ((strchr(filename, '/') != NULL) ||
+        (strchr(filename, '\\') != NULL) ||
+        (strstr(filename, "..") != NULL))
+    {
+        UART_SendString(
+            "Invalid filename or path\r\n");
+        return;
+    }
+
+    result = FileSystem_Mount();
+
+    if (result != FR_OK)
+    {
+        UART_SendString("File        = ");
+        UART_SendString(filename);
+        UART_SendString("\r\n");
+
+        UART_SendString("FatFs Result= ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+
+        UART_SendString("Result      = FAIL\r\n");
+        return;
+    }
+
+    result = f_unlink(filename);
+
+    UART_SendString("File        = ");
+    UART_SendString(filename);
+    UART_SendString("\r\n");
+
+    UART_SendString("FatFs Result= ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+
+    UART_SendString("Result      = ");
+    UART_SendString(
+        (result == FR_OK) ?
+        "PASS\r\n" :
+        "FAIL\r\n");
 }
 
 static void Console_RunFsUnmount(void)
@@ -2188,6 +2796,239 @@ static void Console_RunSdRawTest(void)
         (result.cmd0_r1 == 0x01U) &&
         (result.cmd8_r1 == 0x01U) &&
         (result.cmd8_r7 == 0x000001AAUL))
+    {
+        UART_SendString("PASS\r\n");
+    }
+    else
+    {
+        UART_SendString("FAIL\r\n");
+    }
+}
+static uint16_t Console_ReadLe16(
+    const uint8_t *data)
+{
+    return (uint16_t)data[0] |
+           ((uint16_t)data[1] << 8U);
+}
+
+static uint32_t Console_ReadLe32(
+    const uint8_t *data)
+{
+    return (uint32_t)data[0] |
+           ((uint32_t)data[1] << 8U) |
+           ((uint32_t)data[2] << 16U) |
+           ((uint32_t)data[3] << 24U);
+}
+
+static void Console_RunWavInfo(void)
+{
+    FIL file;
+    FRESULT result;
+    UINT bytes_read = 0U;
+    uint8_t header[44];
+
+    uint32_t file_size;
+    uint32_t riff_size;
+    uint32_t format_chunk_size;
+    uint16_t audio_format;
+    uint16_t channel_count;
+    uint32_t sample_rate;
+    uint32_t byte_rate;
+    uint16_t block_alignment;
+    uint16_t bits_per_sample;
+    uint32_t data_bytes;
+    uint32_t expected_file_size;
+
+    bool riff_valid;
+    bool wave_valid;
+    bool format_valid;
+    bool data_valid;
+    bool size_valid;
+    bool pcm_valid;
+
+    UART_SendString("WAV File Information\r\n");
+    UART_SendString("--------------------\r\n");
+    UART_SendString("File             = CAPTURE.WAV\r\n");
+
+    result = FileSystem_Mount();
+
+    if (result != FR_OK)
+    {
+        UART_SendString("FatFs Result     = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        UART_SendString("Result           = FAIL\r\n");
+        return;
+    }
+
+    result = f_open(
+        &file,
+        "CAPTURE.WAV",
+        FA_READ);
+
+    if (result != FR_OK)
+    {
+        UART_SendString("Open Result      = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        UART_SendString("Result           = FAIL\r\n");
+        return;
+    }
+
+    file_size = (uint32_t)f_size(&file);
+
+    result = f_read(
+        &file,
+        header,
+        sizeof(header),
+        &bytes_read);
+
+    if ((result != FR_OK) ||
+        (bytes_read != sizeof(header)))
+    {
+        UART_SendString("File Size        = ");
+        UART_SendDec(file_size);
+        UART_SendString(" bytes\r\n");
+
+        UART_SendString("Read Result      = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+
+        UART_SendString("Header Bytes     = ");
+        UART_SendDec((uint32_t)bytes_read);
+        UART_SendString("\r\n");
+
+        UART_SendString(
+            "Result           = FAIL\r\n");
+
+        (void)f_close(&file);
+        return;
+    }
+
+    result = f_close(&file);
+
+    riff_size = Console_ReadLe32(&header[4]);
+    format_chunk_size =
+        Console_ReadLe32(&header[16]);
+    audio_format =
+        Console_ReadLe16(&header[20]);
+    channel_count =
+        Console_ReadLe16(&header[22]);
+    sample_rate =
+        Console_ReadLe32(&header[24]);
+    byte_rate =
+        Console_ReadLe32(&header[28]);
+    block_alignment =
+        Console_ReadLe16(&header[32]);
+    bits_per_sample =
+        Console_ReadLe16(&header[34]);
+    data_bytes =
+        Console_ReadLe32(&header[40]);
+
+    expected_file_size = 44U + data_bytes;
+
+    riff_valid =
+        (memcmp(&header[0], "RIFF", 4U) == 0);
+
+    wave_valid =
+        (memcmp(&header[8], "WAVE", 4U) == 0);
+
+    format_valid =
+        (memcmp(&header[12], "fmt ", 4U) == 0);
+
+    data_valid =
+        (memcmp(&header[36], "data", 4U) == 0);
+
+    size_valid =
+        (file_size == expected_file_size) &&
+        (riff_size == (file_size - 8U));
+
+    pcm_valid =
+        (audio_format == 1U) &&
+        (format_chunk_size == 16U) &&
+        (channel_count == 1U) &&
+        (bits_per_sample == 16U) &&
+        (block_alignment == 2U) &&
+        (byte_rate ==
+         (sample_rate *
+          (uint32_t)block_alignment));
+
+    UART_SendString("File Size        = ");
+    UART_SendDec(file_size);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("RIFF Marker      = ");
+    UART_SendString(
+        riff_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("WAVE Marker      = ");
+    UART_SendString(
+        wave_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("Format Marker    = ");
+    UART_SendString(
+        format_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("Data Marker      = ");
+    UART_SendString(
+        data_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("Audio Format     = ");
+    UART_SendDec((uint32_t)audio_format);
+    UART_SendString(
+        (audio_format == 1U) ?
+        " (PCM)\r\n" :
+        "\r\n");
+
+    UART_SendString("Channels         = ");
+    UART_SendDec((uint32_t)channel_count);
+    UART_SendString("\r\n");
+
+    UART_SendString("Sample Rate      = ");
+    UART_SendDec(sample_rate);
+    UART_SendString(" Hz\r\n");
+
+    UART_SendString("Byte Rate        = ");
+    UART_SendDec(byte_rate);
+    UART_SendString(" bytes/s\r\n");
+
+    UART_SendString("Block Alignment  = ");
+    UART_SendDec((uint32_t)block_alignment);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Bits Per Sample  = ");
+    UART_SendDec((uint32_t)bits_per_sample);
+    UART_SendString("\r\n");
+
+    UART_SendString("Data Bytes       = ");
+    UART_SendDec(data_bytes);
+    UART_SendString("\r\n");
+
+    UART_SendString("Expected Size    = ");
+    UART_SendDec(expected_file_size);
+    UART_SendString(" bytes\r\n");
+
+    UART_SendString("Size Check       = ");
+    UART_SendString(
+        size_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("PCM Check        = ");
+    UART_SendString(
+        pcm_valid ? "PASS\r\n" : "FAIL\r\n");
+
+    UART_SendString("Close Result     = ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\n");
+
+    UART_SendString("Result           = ");
+
+    if (riff_valid &&
+        wave_valid &&
+        format_valid &&
+        data_valid &&
+        size_valid &&
+        pcm_valid &&
+        (result == FR_OK))
     {
         UART_SendString("PASS\r\n");
     }
@@ -2689,6 +3530,212 @@ static void Spectrum_Draw(void)
         FFT_GetPeakFrequency());
 }
 
+}
+
+static void UI_ProcessRecorderActions(void)
+{
+    UI_Action action = UI_GetPendingAction();
+    RecorderStatus status;
+    FRESULT result;
+
+    switch (action)
+    {
+        case UI_ACTION_RECORD_5:
+            if (!Analyzer_RequireStopped())
+            {
+                UART_SendString("UI REC 5 blocked by analyzer\r\n");
+                break;
+            }
+
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("UI recorder is already active\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("UI recorder is not idle\r\n");
+                break;
+            }
+
+            result = Recorder_StartRaw();
+
+            if (result != FR_OK)
+            {
+                UART_SendString("UI recorder file open failed\r\n");
+                break;
+            }
+
+            if (!Capture_StartRecorder(5U))
+            {
+                UART_SendString("UI continuous DMA start failed\r\n");
+                (void)Recorder_StopRaw();
+                break;
+            }
+
+            UART_SendString("UI five-second recording started\r\n");
+            break;
+
+        case UI_ACTION_RECORD_STOP:
+            if (Capture_IsRecorderActive())
+            {
+                Capture_StopRecorder();
+                UART_SendString("UI recorder stop requested\r\n");
+            }
+            else
+            {
+                Recorder_GetStatus(&status);
+
+                if (status.state == RECORDER_STATE_RECORDING)
+                {
+                    (void)Recorder_StopRaw();
+                    UART_SendString("UI recorder stop requested\r\n");
+                }
+                else
+                {
+                    UART_SendString("UI recorder is already stopped\r\n");
+                }
+            }
+            break;
+
+        case UI_ACTION_VIEW_WAVEFORM:
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before waveform view\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before waveform view\r\n");
+                break;
+            }
+
+            result = WavViewer_Load("CAPTURE.WAV");
+            if (result == FR_OK)
+            {
+                UI_ShowWaveform();
+                UART_SendString("UI waveform loaded\r\n");
+            }
+            else
+            {
+                UART_SendString("UI waveform load failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+            }
+            break;
+
+        case UI_ACTION_VIEW_SPECTRUM:
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before FFT view\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before FFT view\r\n");
+                break;
+            }
+
+            result = WavFftViewer_Begin("CAPTURE.WAV");
+            if (result == FR_OK)
+            {
+                UI_ShowRecordedFft();
+                UART_SendString("UI recorded FFT loaded\r\n");
+            }
+            else
+            {
+                UART_SendString("UI recorded FFT load failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+            }
+            break;
+
+        case UI_ACTION_FFT_PREVIOUS:
+            result = WavFftViewer_LoadPrevious();
+            if (result == FR_OK)
+            {
+                UI_ShowRecordedFft();
+            }
+            else
+            {
+                UART_SendString("UI recorded FFT previous failed\r\n");
+            }
+            break;
+
+        case UI_ACTION_FFT_NEXT:
+            result = WavFftViewer_LoadNext();
+            if (result == FR_OK)
+            {
+                UI_ShowRecordedFft();
+            }
+            else
+            {
+                UART_SendString("UI recorded FFT next failed\r\n");
+            }
+            break;
+
+        case UI_ACTION_FFT_BACK:
+            WavFftViewer_End();
+            UART_SendString("UI recorded FFT closed\r\n");
+            break;
+
+        case UI_ACTION_NONE:
+        default:
+            break;
+    }
+}
+
+static void UI_UpdateRecorderStatus(void)
+{
+    RecorderStatus recorder_status;
+    UI_RecorderStatus ui_status;
+    uint32_t now;
+
+    if (!UI_IsRecorderScreen())
+    {
+        return;
+    }
+
+    now = HAL_GetTick();
+
+    if ((now - ui_recorder_last_status_ms) <
+        UI_RECORDER_STATUS_PERIOD_MS)
+    {
+        return;
+    }
+
+    ui_recorder_last_status_ms = now;
+    Recorder_GetStatus(&recorder_status);
+
+    ui_status.recorder_state =
+        (uint32_t)recorder_status.state;
+    ui_status.captured_samples =
+        recorder_status.captured_samples;
+    ui_status.queued_bytes =
+        recorder_status.queued_bytes;
+    ui_status.dropped_samples =
+        recorder_status.dropped_samples;
+    ui_status.write_errors =
+        recorder_status.write_errors;
+    ui_status.dma_overruns =
+        Capture_GetRecorderOverruns();
+    ui_status.rms_counts =
+        Capture_GetRecorderRms();
+    ui_status.clip_count =
+        Capture_GetRecorderClipCount();
+    ui_status.clipping =
+        Capture_IsRecorderClipping();
+    ui_status.capture_active =
+        Capture_IsRecorderActive();
+
+    UI_SetRecorderStatus(&ui_status);
 }
 
 static bool Analyzer_RequireStopped(void)

@@ -15,6 +15,12 @@ static volatile uint16_t *display_framebuffer;
  * The initial character set supports frequency labels:
  * digits 0 through 9, space, uppercase H, and lowercase z.
  */
+/*
+ * DISPLAY_FULL_UPPERCASE_FONT_PATCH
+ *
+ * Return one vertical column of a compact 5 x 7 bitmap character.
+ * Bit 0 is the top pixel and bit 6 is the bottom pixel.
+ */
 static uint8_t Display_FontColumn(char character, uint32_t column)
 {
     static const uint8_t digit_font[10][DISPLAY_FONT_WIDTH] =
@@ -31,14 +37,59 @@ static uint8_t Display_FontColumn(char character, uint32_t column)
         {0x06U, 0x49U, 0x49U, 0x29U, 0x1EU}  /* 9 */
     };
 
-    static const uint8_t uppercase_h[DISPLAY_FONT_WIDTH] =
+    static const uint8_t uppercase_font[26][DISPLAY_FONT_WIDTH] =
     {
-        0x7FU, 0x08U, 0x08U, 0x08U, 0x7FU
+        {0x7EU, 0x11U, 0x11U, 0x11U, 0x7EU}, /* A */
+        {0x7FU, 0x49U, 0x49U, 0x49U, 0x36U}, /* B */
+        {0x3EU, 0x41U, 0x41U, 0x41U, 0x22U}, /* C */
+        {0x7FU, 0x41U, 0x41U, 0x22U, 0x1CU}, /* D */
+        {0x7FU, 0x49U, 0x49U, 0x49U, 0x41U}, /* E */
+        {0x7FU, 0x09U, 0x09U, 0x09U, 0x01U}, /* F */
+        {0x3EU, 0x41U, 0x49U, 0x49U, 0x7AU}, /* G */
+        {0x7FU, 0x08U, 0x08U, 0x08U, 0x7FU}, /* H */
+        {0x00U, 0x41U, 0x7FU, 0x41U, 0x00U}, /* I */
+        {0x20U, 0x40U, 0x41U, 0x3FU, 0x01U}, /* J */
+        {0x7FU, 0x08U, 0x14U, 0x22U, 0x41U}, /* K */
+        {0x7FU, 0x40U, 0x40U, 0x40U, 0x40U}, /* L */
+        {0x7FU, 0x02U, 0x0CU, 0x02U, 0x7FU}, /* M */
+        {0x7FU, 0x04U, 0x08U, 0x10U, 0x7FU}, /* N */
+        {0x3EU, 0x41U, 0x41U, 0x41U, 0x3EU}, /* O */
+        {0x7FU, 0x09U, 0x09U, 0x09U, 0x06U}, /* P */
+        {0x3EU, 0x41U, 0x51U, 0x21U, 0x5EU}, /* Q */
+        {0x7FU, 0x09U, 0x19U, 0x29U, 0x46U}, /* R */
+        {0x46U, 0x49U, 0x49U, 0x49U, 0x31U}, /* S */
+        {0x01U, 0x01U, 0x7FU, 0x01U, 0x01U}, /* T */
+        {0x3FU, 0x40U, 0x40U, 0x40U, 0x3FU}, /* U */
+        {0x1FU, 0x20U, 0x40U, 0x20U, 0x1FU}, /* V */
+        {0x3FU, 0x40U, 0x38U, 0x40U, 0x3FU}, /* W */
+        {0x63U, 0x14U, 0x08U, 0x14U, 0x63U}, /* X */
+        {0x07U, 0x08U, 0x70U, 0x08U, 0x07U}, /* Y */
+        {0x61U, 0x51U, 0x49U, 0x45U, 0x43U}  /* Z */
     };
 
     static const uint8_t lowercase_z[DISPLAY_FONT_WIDTH] =
     {
         0x44U, 0x64U, 0x54U, 0x4CU, 0x44U
+    };
+
+    static const uint8_t dash[DISPLAY_FONT_WIDTH] =
+    {
+        0x08U, 0x08U, 0x08U, 0x08U, 0x08U
+    };
+
+    static const uint8_t period[DISPLAY_FONT_WIDTH] =
+    {
+        0x00U, 0x60U, 0x60U, 0x00U, 0x00U
+    };
+
+    static const uint8_t colon[DISPLAY_FONT_WIDTH] =
+    {
+        0x00U, 0x36U, 0x36U, 0x00U, 0x00U
+    };
+
+    static const uint8_t slash[DISPLAY_FONT_WIDTH] =
+    {
+        0x20U, 0x10U, 0x08U, 0x04U, 0x02U
     };
 
     if (column >= DISPLAY_FONT_WIDTH)
@@ -51,14 +102,34 @@ static uint8_t Display_FontColumn(char character, uint32_t column)
         return digit_font[(uint32_t)(character - '0')][column];
     }
 
-    if (character == 'H')
+    if ((character >= 'A') && (character <= 'Z'))
     {
-        return uppercase_h[column];
+        return uppercase_font[(uint32_t)(character - 'A')][column];
     }
 
     if (character == 'z')
     {
         return lowercase_z[column];
+    }
+
+    if (character == '-')
+    {
+        return dash[column];
+    }
+
+    if (character == '.')
+    {
+        return period[column];
+    }
+
+    if (character == ':')
+    {
+        return colon[column];
+    }
+
+    if (character == '/')
+    {
+        return slash[column];
     }
 
     /* Spaces and unsupported characters are rendered blank. */

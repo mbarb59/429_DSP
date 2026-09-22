@@ -28,6 +28,7 @@ Core/Src/main.c \
 Middlewares/Third_Party/FatFs/src/ff.c \
 Core/Src/sd_diskio.c \
 Core/Src/filesystem_service.c \
+Core/Src/sd_benchmark.c \
 Core/Src/system_stm32f4xx.c \
 Core/Src/uart.c \
 Core/Src/ltdc_ili9341.c \
@@ -43,6 +44,8 @@ Core/Src/sd_spi.c \
 Core/Src/sd_card.c \
 Core/Src/storage_framework.c \
 Core/Src/recorder_framework.c \
+Core/Src/wav_viewer.c \
+Core/Src/wav_fft_viewer.c \
 Core/Src/file_manager_framework.c \
 Core/Src/sd_raw_test.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
