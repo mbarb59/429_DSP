@@ -96,14 +96,18 @@ FRESULT FileSystem_ListRoot(void)
         if ((information.fattrib & AM_DIR) != 0U)
         {
             UART_SendString("[DIR]  ");
+            UART_SendString(information.fname);
+            UART_SendString("\r\n");
         }
         else
         {
+            /* SDLS_FILE_SIZES_PATCH */
             UART_SendString("[FILE] ");
+            UART_SendString(information.fname);
+            UART_SendString("  ");
+            UART_SendDec((uint32_t)information.fsize);
+            UART_SendString(" bytes\r\n");
         }
-
-        UART_SendString(information.fname);
-        UART_SendString("\r\n");
     }
 
     (void)f_closedir(&directory);

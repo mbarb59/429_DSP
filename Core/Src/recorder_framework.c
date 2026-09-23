@@ -383,10 +383,37 @@ void Recorder_Process(void)
     if (recorder_status.state ==
         RECORDER_STATE_RECORDING)
     {
-        (void)Recorder_WriteQueuedBlock(false);
+        FRESULT result;
+
+        /*
+         * RECORDER_TWO_BLOCK_DRAIN
+         *
+         * One completed 4096-sample DMA half produces 8192 PCM bytes.
+         * Drain up to two 4096-byte write blocks per foreground call.
+         * Keep the limit bounded so DMA completion processing and UI
+         * work regain control promptly.
+         */
+        for (uint32_t block = 0U;
+             block < 2U;
+             block++)
+        {
+            if (recorder_status.queued_bytes <
+                RECORDER_WRITE_BLOCK_BYTES)
+            {
+                break;
+            }
+
+            result =
+                Recorder_WriteQueuedBlock(false);
+
+            if (result != FR_OK)
+            {
+                return;
+            }
+        }
+
         return;
     }
-
     if (recorder_status.state ==
         RECORDER_STATE_STOPPING)
     {
