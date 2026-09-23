@@ -57,6 +57,10 @@
 #define UI_SCALE_PIXEL_THRESHOLD   4
 #define UI_TOUCH_POLL_MS           10U
 
+/* UI_TOUCH_STABILITY_PATCH */
+#define UI_TOUCH_ACTION_LOCKOUT_MS  225U
+#define UI_TOUCH_RELEASE_POLLS      2U
+
 /* UI_RECORDER_LABEL_FIX */
 #define UI_REC_TAB_X               256
 #define UI_REC_TAB_WIDTH           64
@@ -116,6 +120,10 @@ typedef struct
     uint16_t previous_touch_y;
 
     uint32_t last_touch_poll_ms;
+    uint32_t last_touch_action_ms;
+    uint32_t released_poll_count;
+    bool touch_armed;
+    UI_Button pressed_button;
 } UI_State;
 
 static UI_State ui;
@@ -186,6 +194,10 @@ void UI_Init(void)
     ui.previous_touch_x = 0U;
     ui.previous_touch_y = 0U;
     ui.last_touch_poll_ms = HAL_GetTick();
+    ui.last_touch_action_ms = 0U;
+    ui.released_poll_count = UI_TOUCH_RELEASE_POLLS;
+    ui.touch_armed = true;
+    ui.pressed_button = UI_BUTTON_NONE;
 
     Display_Clear(COLOR_BLACK);
     UI_Draw();
@@ -280,18 +292,40 @@ void UI_ProcessTouch(void)
 
     if (touch.pressed)
     {
+        ui.released_poll_count = 0U;
+
         if (!ui.touch_active)
         {
-            ui_handle_touch_down(&touch);
+            if (ui.touch_armed &&
+                ((now - ui.last_touch_action_ms) >=
+                 UI_TOUCH_ACTION_LOCKOUT_MS))
+            {
+                ui_handle_touch_down(&touch);
+            }
         }
         else
         {
             ui_handle_touch_move(&touch);
         }
     }
-    else if (ui.touch_active)
+    else
     {
-        ui_handle_touch_up();
+        if (ui.touch_active)
+        {
+            ui_handle_touch_up();
+        }
+
+        if (ui.released_poll_count < UI_TOUCH_RELEASE_POLLS)
+        {
+            ui.released_poll_count++;
+        }
+
+        if ((ui.released_poll_count >= UI_TOUCH_RELEASE_POLLS) &&
+            ((now - ui.last_touch_action_ms) >=
+             UI_TOUCH_ACTION_LOCKOUT_MS))
+        {
+            ui.touch_armed = true;
+        }
     }
 
     if (ui.controls_dirty)
@@ -1191,6 +1225,9 @@ static void ui_handle_touch_down(
 
     ui.previous_touch_x = touch->x;
     ui.previous_touch_y = touch->y;
+
+    ui.touch_armed = false;
+    ui.pressed_button = ui_hit_test_button(touch->x, touch->y);
 }
 
 static void ui_handle_touch_move(const STMPE811_TouchData *touch)
@@ -1231,10 +1268,16 @@ static void ui_handle_touch_move(const STMPE811_TouchData *touch)
 
 static void ui_handle_touch_up(void)
 {
-    if ((ui.mode == UI_MODE_ANALYZER) &&
+    bool action_executed = false;
+
+    if (!ui.dragging &&
+        (ui.mode == UI_MODE_ANALYZER) &&
         (ui.touch_start_y >= UI_STATUS_TOP) &&
         (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
-        (ui.touch_start_x >= UI_REC_TAB_X))
+        (ui.touch_start_x >= UI_REC_TAB_X) &&
+        (ui.previous_touch_y >= UI_STATUS_TOP) &&
+        (ui.previous_touch_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.previous_touch_x >= UI_REC_TAB_X))
     {
         ui.mode = UI_MODE_RECORDER;
         ui.running = false;
@@ -1242,18 +1285,32 @@ static void ui_handle_touch_up(void)
         ui.controls_dirty = true;
         Display_Clear(COLOR_BLACK);
         UART_SendString("UI RECORDER SCREEN\r\n");
+        action_executed = true;
     }
-    else if (ui.touch_start_y < UI_CONTROL_HEIGHT)
+    else if (!ui.dragging &&
+             (ui.touch_start_y < UI_CONTROL_HEIGHT) &&
+             (ui.previous_touch_y < UI_CONTROL_HEIGHT))
     {
-        UI_Button button = ui_hit_test_button(
-            ui.touch_start_x,
-            ui.touch_start_y);
+        UI_Button released_button = ui_hit_test_button(
+            ui.previous_touch_x,
+            ui.previous_touch_y);
 
-        ui_execute_button(button);
+        if ((ui.pressed_button != UI_BUTTON_NONE) &&
+            (released_button == ui.pressed_button))
+        {
+            ui_execute_button(ui.pressed_button);
+            action_executed = true;
+        }
     }
 
     ui.touch_active = false;
     ui.dragging = false;
+    ui.pressed_button = UI_BUTTON_NONE;
+
+    if (action_executed)
+    {
+        ui.last_touch_action_ms = HAL_GetTick();
+    }
 }
 
 static void ui_pan_pixels(int32_t pixel_delta)

@@ -260,16 +260,35 @@ UART_SendString("LTDC INIT...\r\n");
     UART_SendString("Type help for commands.\r\n");
     Console_PrintPrompt();
 
-    while (1)
+   while (1)
+   {
+    /* Highest priority: move completed DMA audio into the queue. */
+    Capture_ProcessRecorder();
+    Recorder_Process();
+
+    /* Read touch first, then execute any action it generated. */
+    UI_ProcessTouch();
+    UI_ProcessRecorderActions();
+
+    /* Immediately service recording again after UI activity. */
+    Capture_ProcessRecorder();
+    Recorder_Process();
+
+    UI_UpdateRecorderStatus();
+
+    /* Service recording again after possible display work. */
+    Capture_ProcessRecorder();
+    Recorder_Process();
+
+    /* Live analyzer work is unnecessary during WAV recording. */
+    if (!Capture_IsRecorderActive())
     {
-        Console_Poll();
-        UI_ProcessTouch();
-        UI_ProcessRecorderActions();
         Analyzer_Process();
-        Capture_ProcessRecorder();
-        Recorder_Process();
-        UI_UpdateRecorderStatus();
     }
+
+    /* Keep UART commands responsive at all times. */
+    Console_Poll();
+  }
 }
 
 static void Console_Poll(void)
