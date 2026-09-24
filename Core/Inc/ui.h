@@ -26,7 +26,9 @@ typedef enum
     UI_ACTION_FILE_INFO,
     UI_ACTION_FILE_DELETE,
     UI_ACTION_FILE_DELETE_CANCEL,
-    UI_ACTION_FILE_DELETE_CONFIRM
+    UI_ACTION_FILE_DELETE_CONFIRM,
+    UI_ACTION_FILE_RENAME_OPEN,
+    UI_ACTION_FILE_RENAME_SAVE
 } UI_Action;
 
 /* UI_WAV_INFO_SCREEN_PATCH */
@@ -89,6 +91,12 @@ void UI_ShowDeleteConfirmation(const char *filename);
 void UI_ReturnToFileActions(void);
 bool UI_IsDeleteConfirmationScreen(void);
 const char *UI_GetDeleteFilename(void);
+
+/* UI_WAV_RENAME_PATCH */
+void UI_ShowRenameEditor(const char *filename);
+bool UI_IsRenameEditorScreen(void);
+const char *UI_GetRenameSource(void);
+const char *UI_GetRenameTarget(void);
 
 
 void UI_SetRunning(bool running);

@@ -72,6 +72,7 @@ static void Console_RunSdInit(void);
 static void Console_RunSdReadZero(void);
 static void Console_RunSdDelete(
     const char *filename);
+static void Console_RunWavRename(const char *arguments);
 static void Console_PrintFsResult(
     const char *operation,
     FRESULT result);
@@ -143,6 +144,8 @@ static uint32_t analyzer_last_display_ms;
 /* UI_DEFAULT_WAV_SELECTION_PATCH */
 /* UI_WAV_INFO_SCREEN_PATCH */
 /* UI_DELETE_CONFIRMATION_PATCH */
+/* CONSOLE_WAV_RENAME_PATCH */
+/* UI_WAV_RENAME_PATCH */
 #define UI_RECORDER_STATUS_PERIOD_MS  100U
 static uint32_t ui_recorder_last_status_ms;
 
@@ -461,6 +464,13 @@ else if (strcmp(command, "sdread0") == 0)
     {
         Console_RunSdDelete(filename);
     }
+    }
+    else if ((strncmp(command, "wavrename", 9U) == 0) &&
+             ((command[9] == '\0') ||
+              (command[9] == ' ') ||
+              (command[9] == '	')))
+    {
+        Console_RunWavRename(&command[9]);
     }
     else if (strcmp(command, "sdbench") == 0)
     {
@@ -1011,6 +1021,7 @@ static void Console_PrintHelp(void)
         "sdinit      - Initialize SD card and show card information\r\n"
 	"sdbench     - Benchmark SD write performance\r\n"
 	"sddel       - Delete a specified file: sddel <filename>\r\n"
+        "wavrename   - Rename WAV: wavrename <old> <new>\r\n"
 	"wavinfo     - Validate CAPTURE.WAV header and size\r\n"
         "rectone5    - Create five-second 1500 Hz test WAV\r\n"
     "rec5        - Record five seconds to CAPTURE.WAV\r\n"
@@ -2432,6 +2443,102 @@ static void Console_RunFsFileTest(void)
     result = FileSystem_VerifiedFileTest();
     Console_PrintFsResult("File Test", result);
 }
+static void Console_RunWavRename(const char *arguments)
+{
+    RecorderStatus status;
+    FRESULT result;
+    char source[RECORDING_FILENAME_CAPACITY];
+    char target[RECORDING_FILENAME_CAPACITY];
+    char normalized_source[RECORDING_FILENAME_CAPACITY];
+    char normalized_target[RECORDING_FILENAME_CAPACITY];
+    size_t source_length = 0U;
+    size_t target_length = 0U;
+
+    UART_SendString("WAV Rename\r\n");
+    UART_SendString("----------\r\n");
+
+    while ((*arguments == ' ') || (*arguments == '\t')) arguments++;
+    while ((*arguments != '\0') && (*arguments != ' ') &&
+           (*arguments != '\t') &&
+           (source_length < sizeof(source) - 1U))
+    {
+        source[source_length++] = *arguments++;
+    }
+    source[source_length] = '\0';
+
+    while ((*arguments == ' ') || (*arguments == '\t')) arguments++;
+    while ((*arguments != '\0') && (*arguments != ' ') &&
+           (*arguments != '\t') &&
+           (target_length < sizeof(target) - 1U))
+    {
+        target[target_length++] = *arguments++;
+    }
+    target[target_length] = '\0';
+    while ((*arguments == ' ') || (*arguments == '\t')) arguments++;
+
+    if ((source_length == 0U) || (target_length == 0U) ||
+        (*arguments != '\0'))
+    {
+        UART_SendString("Usage: wavrename <old.wav> <new.wav>\r\n");
+        return;
+    }
+
+    if (!RecordingCatalog_NormalizeWavFilename(
+            source, normalized_source))
+    {
+        UART_SendString("Invalid source WAV filename\r\n");
+        return;
+    }
+    if (!RecordingCatalog_NormalizeWavFilename(
+            target, normalized_target))
+    {
+        UART_SendString("Invalid target WAV filename\r\n");
+        return;
+    }
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Stop recording before rename\r\n");
+        return;
+    }
+    Recorder_GetStatus(&status);
+    if (status.state != RECORDER_STATE_IDLE)
+    {
+        UART_SendString("Wait for recorder IDLE before rename\r\n");
+        return;
+    }
+
+    UART_SendString("Source          = ");
+    UART_SendString(normalized_source);
+    UART_SendString("\r\nTarget          = ");
+    UART_SendString(normalized_target);
+    UART_SendString("\r\n");
+
+    result = RecordingCatalog_RenameFile(
+        normalized_source, normalized_target);
+
+    if (result == FR_EXIST)
+    {
+        UART_SendString("Target already exists\r\n");
+    }
+    else if (result == FR_NO_FILE)
+    {
+        UART_SendString("Source file not found\r\n");
+    }
+
+    UART_SendString("Rename Result   = ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString("\r\nResult          = ");
+    UART_SendString((result == FR_OK) ? "PASS\r\n" : "FAIL\r\n");
+
+    if (result == FR_OK)
+    {
+        UART_SendString("Selected WAV    = ");
+        UART_SendString(RecordingCatalog_GetSelected());
+        UART_SendString("\r\n");
+    }
+}
+
 static void Console_RunSdDelete(
     const char *filename)
 {
@@ -3950,6 +4057,92 @@ static void UI_ProcessRecorderActions(void)
             break;
         }
 
+        case UI_ACTION_FILE_RENAME_OPEN:
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before rename\r\n");
+                break;
+            }
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before rename\r\n");
+                break;
+            }
+            if (!RecordingCatalog_EnsureSelectedValid())
+            {
+                UART_SendString("Select a valid WAV before rename\r\n");
+                break;
+            }
+            UI_ShowRenameEditor(RecordingCatalog_GetSelected());
+            UART_SendString("UI rename editor loaded: ");
+            UART_SendString(RecordingCatalog_GetSelected());
+            UART_SendString("\r\n");
+            break;
+
+        case UI_ACTION_FILE_RENAME_SAVE:
+        {
+            char source[RECORDING_FILENAME_CAPACITY];
+            char target[RECORDING_FILENAME_CAPACITY];
+            uint32_t page = RecordingCatalog_GetPageIndex();
+
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before rename\r\n");
+                break;
+            }
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before rename\r\n");
+                break;
+            }
+
+            strncpy(source, UI_GetRenameSource(), sizeof(source) - 1U);
+            source[sizeof(source) - 1U] = '\0';
+            strncpy(target, UI_GetRenameTarget(), sizeof(target) - 1U);
+            target[sizeof(target) - 1U] = '\0';
+
+            if (target[0] == '\0')
+            {
+                UART_SendString("UI rename rejected: empty name\r\n");
+                break;
+            }
+
+            result = RecordingCatalog_RenameFile(source, target);
+            if (result != FR_OK)
+            {
+                UART_SendString("UI rename failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+                break;
+            }
+
+            UART_SendString("UI rename OK: ");
+            UART_SendString(source);
+            UART_SendString(" -> ");
+            UART_SendString(target);
+            UART_SendString("\r\n");
+
+            result = RecordingCatalog_LoadPage(page);
+            if (result == FR_OK)
+            {
+                UI_ReturnToFileBrowser();
+                UI_RefreshFileBrowser();
+                UART_SendString("UI selected WAV: ");
+                UART_SendString(RecordingCatalog_GetSelected());
+                UART_SendString("\r\n");
+            }
+            else
+            {
+                UART_SendString("UI browser refresh failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+                UI_ShowRecorder();
+            }
+            break;
+        }
+
         case UI_ACTION_FILE_DELETE:
             if (Capture_IsRecorderActive())
             {
@@ -4057,7 +4250,7 @@ static void UI_ProcessRecorderActions(void)
 static void UI_UpdateRecorderStatus(void)
 {
     RecorderStatus recorder_status;
-    UI_RecorderStatus ui_status;
+    UI_RecorderStatus ui_status = {0};
     uint32_t now;
 
     if (!UI_IsRecorderScreen())

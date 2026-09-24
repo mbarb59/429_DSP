@@ -78,6 +78,16 @@
 #define UI_BROWSER_ROW_TOP         42U
 #define UI_BROWSER_ROW_HEIGHT      27U
 
+/* UI_WAV_RENAME_PATCH */
+#define UI_RENAME_BUTTON_X          188U
+#define UI_RENAME_BUTTON_Y          132U
+#define UI_RENAME_BUTTON_WIDTH      120U
+#define UI_RENAME_BUTTON_HEIGHT     54U
+#define UI_RENAME_KEY_TOP           86U
+#define UI_RENAME_KEY_WIDTH         40U
+#define UI_RENAME_KEY_HEIGHT        25U
+#define UI_RENAME_KEY_COUNT         37U
+
 typedef enum
 {
     UI_BUTTON_NONE = 0,
@@ -111,7 +121,12 @@ typedef enum
     UI_BUTTON_WAV_INFO_BACK,
     UI_BUTTON_DELETE_BACK,
     UI_BUTTON_DELETE_CANCEL,
-    UI_BUTTON_DELETE_CONFIRM
+    UI_BUTTON_DELETE_CONFIRM,
+    UI_BUTTON_RENAME_BACK,
+    UI_BUTTON_RENAME_CLEAR,
+    UI_BUTTON_RENAME_BACKSPACE,
+    UI_BUTTON_RENAME_CANCEL,
+    UI_BUTTON_RENAME_SAVE
 } UI_Button;
 
 typedef enum
@@ -123,7 +138,8 @@ typedef enum
     UI_MODE_FILE_BROWSER,
     UI_MODE_FILE_ACTIONS,
     UI_MODE_WAV_INFO,
-    UI_MODE_FILE_DELETE_CONFIRM
+    UI_MODE_FILE_DELETE_CONFIRM,
+    UI_MODE_FILE_RENAME
 } UI_Mode;
 
 typedef struct
@@ -140,6 +156,11 @@ typedef struct
     UI_RecorderStatus recorder_status;
     UI_WavInfo wav_info;
     char delete_filename[RECORDING_FILENAME_CAPACITY];
+    char rename_source[RECORDING_FILENAME_CAPACITY];
+    char rename_base[9];
+    char rename_target[RECORDING_FILENAME_CAPACITY];
+    uint32_t rename_length;
+    int32_t pressed_rename_key;
     uint32_t last_recorder_draw_ms;
     uint32_t browser_row;
     uint32_t browser_pending_row;
@@ -169,6 +190,9 @@ static void ui_draw_file_browser_body(void);
 static void ui_draw_file_actions_body(void);
 static void ui_draw_wav_info_body(void);
 static void ui_draw_delete_confirmation_body(void);
+static void ui_draw_rename_editor_body(void);
+static int32_t ui_rename_key_at(uint16_t x, uint16_t y);
+static void ui_rename_append_key(uint32_t key_index);
 static void ui_draw_waveform_body(void);
 static void ui_draw_uint(
     int32_t x,
@@ -213,6 +237,11 @@ void UI_Init(void)
     ui.pending_action = UI_ACTION_NONE;
     memset(&ui.wav_info, 0, sizeof(ui.wav_info));
     ui.delete_filename[0] = '\0';
+    ui.rename_source[0] = '\0';
+    ui.rename_base[0] = '\0';
+    ui.rename_target[0] = '\0';
+    ui.rename_length = 0U;
+    ui.pressed_rename_key = -1;
     ui.recorder_status.recorder_state = 0U;
     ui.recorder_status.captured_samples = 0U;
     ui.recorder_status.queued_bytes = 0U;
@@ -264,6 +293,13 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_RENAME)
+    {
+        ui_draw_rename_editor_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -427,7 +463,40 @@ UI_Action UI_GetPendingAction(void)
 void UI_SetRecorderStatus(
     const UI_RecorderStatus *status)
 {
+    bool changed;
+
     if (status == NULL)
+    {
+        return;
+    }
+
+    /*
+     * UI_REC_SCREEN_FLICKER_POLISH
+     * Compare actual fields rather than structure padding.
+     */
+    changed =
+        (ui.recorder_status.recorder_state !=
+         status->recorder_state) ||
+        (ui.recorder_status.captured_samples !=
+         status->captured_samples) ||
+        (ui.recorder_status.queued_bytes !=
+         status->queued_bytes) ||
+        (ui.recorder_status.dropped_samples !=
+         status->dropped_samples) ||
+        (ui.recorder_status.write_errors !=
+         status->write_errors) ||
+        (ui.recorder_status.dma_overruns !=
+         status->dma_overruns) ||
+        (ui.recorder_status.rms_counts !=
+         status->rms_counts) ||
+        (ui.recorder_status.clip_count !=
+         status->clip_count) ||
+        (ui.recorder_status.clipping !=
+         status->clipping) ||
+        (ui.recorder_status.capture_active !=
+         status->capture_active);
+
+    if (!changed)
     {
         return;
     }
@@ -439,7 +508,6 @@ void UI_SetRecorderStatus(
         ui.graph_dirty = true;
     }
 }
-
 bool UI_IsRecorderScreen(void)
 {
     return ui.mode == UI_MODE_RECORDER;
@@ -603,6 +671,55 @@ const char *UI_GetDeleteFilename(void)
     return ui.delete_filename;
 }
 
+void UI_ShowRenameEditor(const char *filename)
+{
+    const char *dot;
+    size_t base_length;
+
+    if (filename == NULL) return;
+
+    strncpy(ui.rename_source, filename,
+            sizeof(ui.rename_source) - 1U);
+    ui.rename_source[sizeof(ui.rename_source) - 1U] = '\0';
+
+    dot = strchr(filename, '.');
+    base_length = (dot != NULL) ? (size_t)(dot - filename) : strlen(filename);
+    if (base_length > 8U) base_length = 8U;
+    memcpy(ui.rename_base, filename, base_length);
+    ui.rename_base[base_length] = '\0';
+    ui.rename_length = (uint32_t)base_length;
+    ui.rename_target[0] = '\0';
+    ui.pressed_rename_key = -1;
+    ui.mode = UI_MODE_FILE_RENAME;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsRenameEditorScreen(void)
+{
+    return ui.mode == UI_MODE_FILE_RENAME;
+}
+
+const char *UI_GetRenameSource(void)
+{
+    return ui.rename_source;
+}
+
+const char *UI_GetRenameTarget(void)
+{
+    if (ui.rename_length == 0U)
+    {
+        ui.rename_target[0] = '\0';
+        return ui.rename_target;
+    }
+
+    memcpy(ui.rename_target, ui.rename_base, ui.rename_length);
+    strcpy(&ui.rename_target[ui.rename_length], ".WAV");
+    return ui.rename_target;
+}
+
 void UI_RefreshFileBrowser(void)
 {
     uint32_t count = RecordingCatalog_GetPageEntryCount();
@@ -691,6 +808,23 @@ uint32_t UI_GetMagnitudeMax(void)
 static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
+
+    if (ui.mode == UI_MODE_FILE_RENAME)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(192, COLOR_MAGENTA, COLOR_WHITE);
+        ui_draw_button(256, COLOR_GREEN, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(74, 12, "CLEAR", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(148, 12, "BKSP", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(200, 12, "CANCEL", COLOR_BLACK, COLOR_MAGENTA);
+        Display_DrawString(274, 12, "SAVE", COLOR_BLACK, COLOR_GREEN);
+        return;
+    }
 
     if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
     {
@@ -1053,6 +1187,85 @@ static void ui_draw_wav_info_body(void)
                        COLOR_BLACK);
 }
 
+static int32_t ui_rename_key_at(uint16_t x, uint16_t y)
+{
+    uint32_t row;
+    uint32_t column;
+    uint32_t index;
+
+    if ((y < UI_RENAME_KEY_TOP) ||
+        (y >= (UI_RENAME_KEY_TOP + (5U * UI_RENAME_KEY_HEIGHT))))
+    {
+        return -1;
+    }
+
+    row = (y - UI_RENAME_KEY_TOP) / UI_RENAME_KEY_HEIGHT;
+    column = x / UI_RENAME_KEY_WIDTH;
+    index = (row * 8U) + column;
+    return (index < UI_RENAME_KEY_COUNT) ? (int32_t)index : -1;
+}
+
+static void ui_rename_append_key(uint32_t key_index)
+{
+    static const char keys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+
+    if ((key_index >= UI_RENAME_KEY_COUNT) ||
+        (ui.rename_length >= 8U))
+    {
+        return;
+    }
+
+    ui.rename_base[ui.rename_length++] = keys[key_index];
+    ui.rename_base[ui.rename_length] = '\0';
+    ui.graph_dirty = true;
+}
+
+static void ui_draw_rename_editor_body(void)
+{
+    static const char keys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+    char display_name[RECORDING_FILENAME_CAPACITY];
+
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_MAGENTA);
+
+    Display_DrawString(6, 38, "CURRENT", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(76, 38, ui.rename_source, COLOR_GREEN, COLOR_BLACK);
+    Display_DrawString(6, 60, "NEW", COLOR_WHITE, COLOR_BLACK);
+    if (ui.rename_length != 0U)
+    {
+        memcpy(display_name, ui.rename_base, ui.rename_length);
+        strcpy(&display_name[ui.rename_length], ".WAV");
+    }
+    else
+    {
+        strcpy(display_name, "_.WAV");
+    }
+    Display_DrawString(76, 60, display_name, COLOR_YELLOW, COLOR_BLACK);
+
+    for (uint32_t index = 0U; index < UI_RENAME_KEY_COUNT; index++)
+    {
+        uint32_t row = index / 8U;
+        uint32_t column = index % 8U;
+        int32_t x = (int32_t)(column * UI_RENAME_KEY_WIDTH);
+        int32_t y = (int32_t)(UI_RENAME_KEY_TOP +
+                              (row * UI_RENAME_KEY_HEIGHT));
+        char label[2] = { keys[index], '\0' };
+
+        Display_FillRect(x + 1, y + 1,
+                         UI_RENAME_KEY_WIDTH - 2U,
+                         UI_RENAME_KEY_HEIGHT - 2U,
+                         COLOR_DARK_GRAY);
+        Display_DrawRect(x, y,
+                         UI_RENAME_KEY_WIDTH,
+                         UI_RENAME_KEY_HEIGHT,
+                         COLOR_WHITE);
+        Display_DrawString(x + 16, y + 9, label,
+                           COLOR_WHITE, COLOR_DARK_GRAY);
+    }
+}
+
 static void ui_draw_file_actions_body(void)
 {
     const char *selected = RecordingCatalog_GetSelected();
@@ -1079,13 +1292,19 @@ static void ui_draw_file_actions_body(void)
     }
 
     Display_DrawString(10, 128, "WAVE", COLOR_CYAN, COLOR_BLACK);
-    Display_DrawString(76, 128, "VIEW WAVEFORM", COLOR_WHITE, COLOR_BLACK);
     Display_DrawString(10, 150, "FFT", COLOR_GREEN, COLOR_BLACK);
-    Display_DrawString(76, 150, "VIEW SPECTRUM", COLOR_WHITE, COLOR_BLACK);
     Display_DrawString(10, 172, "INFO", COLOR_YELLOW, COLOR_BLACK);
-    Display_DrawString(76, 172, "NEXT MILESTONE", COLOR_GRAY, COLOR_BLACK);
     Display_DrawString(10, 194, "DELETE", COLOR_RED, COLOR_BLACK);
-    Display_DrawString(76, 194, "DISABLED", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(66, 194, "CONFIRM", COLOR_GRAY, COLOR_BLACK);
+
+    Display_FillRect(UI_RENAME_BUTTON_X, UI_RENAME_BUTTON_Y,
+                     UI_RENAME_BUTTON_WIDTH, UI_RENAME_BUTTON_HEIGHT,
+                     COLOR_MAGENTA);
+    Display_DrawRect(UI_RENAME_BUTTON_X, UI_RENAME_BUTTON_Y,
+                     UI_RENAME_BUTTON_WIDTH, UI_RENAME_BUTTON_HEIGHT,
+                     COLOR_WHITE);
+    Display_DrawString(220, 151, "RENAME", COLOR_BLACK, COLOR_MAGENTA);
+    Display_DrawString(202, 171, "EDIT WAV NAME", COLOR_BLACK, COLOR_MAGENTA);
 }
 
 static void ui_draw_file_browser_body(void)
@@ -1280,6 +1499,19 @@ static void ui_draw_peak_marker(void)
 static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
+
+    if (ui.mode == UI_MODE_FILE_RENAME)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_MAGENTA);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "RENAME", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(68, UI_STATUS_TOP + 8,
+                           "MAX 8 CHARACTERS", COLOR_YELLOW, COLOR_BLACK);
+        return;
+    }
 
     if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
     {
@@ -1479,6 +1711,15 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
     if (y >= UI_CONTROL_HEIGHT)
     {
         return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_FILE_RENAME)
+    {
+        if (x < 64U) return UI_BUTTON_RENAME_BACK;
+        if (x < 128U) return UI_BUTTON_RENAME_CLEAR;
+        if (x < 192U) return UI_BUTTON_RENAME_BACKSPACE;
+        if (x < 256U) return UI_BUTTON_RENAME_CANCEL;
+        return UI_BUTTON_RENAME_SAVE;
     }
 
     if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
@@ -1721,6 +1962,34 @@ static void ui_execute_button(UI_Button button)
             UART_SendString("UI FILE DELETE REQUEST\r\n");
             break;
 
+        case UI_BUTTON_RENAME_BACK:
+        case UI_BUTTON_RENAME_CANCEL:
+            UI_ReturnToFileActions();
+            UART_SendString("UI RENAME CANCELLED\r\n");
+            break;
+
+        case UI_BUTTON_RENAME_CLEAR:
+            ui.rename_length = 0U;
+            ui.rename_base[0] = '\0';
+            ui.graph_dirty = true;
+            UART_SendString("UI RENAME CLEAR\r\n");
+            break;
+
+        case UI_BUTTON_RENAME_BACKSPACE:
+            if (ui.rename_length != 0U)
+            {
+                ui.rename_length--;
+                ui.rename_base[ui.rename_length] = '\0';
+                ui.graph_dirty = true;
+            }
+            UART_SendString("UI RENAME BKSP\r\n");
+            break;
+
+        case UI_BUTTON_RENAME_SAVE:
+            ui.pending_action = UI_ACTION_FILE_RENAME_SAVE;
+            UART_SendString("UI RENAME SAVE REQUEST\r\n");
+            break;
+
         case UI_BUTTON_DELETE_BACK:
         case UI_BUTTON_DELETE_CANCEL:
             ui.pending_action = UI_ACTION_FILE_DELETE_CANCEL;
@@ -1796,6 +2065,9 @@ static void ui_handle_touch_down(
 
     ui.touch_armed = false;
     ui.pressed_button = ui_hit_test_button(touch->x, touch->y);
+    ui.pressed_rename_key =
+        (ui.mode == UI_MODE_FILE_RENAME) ?
+        ui_rename_key_at(touch->x, touch->y) : -1;
 }
 
 static void ui_handle_touch_move(const STMPE811_TouchData *touch)
@@ -1888,6 +2160,34 @@ static void ui_handle_touch_up(void)
         }
     }
     else if (!ui.dragging &&
+             (ui.mode == UI_MODE_FILE_ACTIONS) &&
+             (ui.touch_start_x >= UI_RENAME_BUTTON_X) &&
+             (ui.touch_start_x < (UI_RENAME_BUTTON_X + UI_RENAME_BUTTON_WIDTH)) &&
+             (ui.touch_start_y >= UI_RENAME_BUTTON_Y) &&
+             (ui.touch_start_y < (UI_RENAME_BUTTON_Y + UI_RENAME_BUTTON_HEIGHT)) &&
+             (ui.previous_touch_x >= UI_RENAME_BUTTON_X) &&
+             (ui.previous_touch_x < (UI_RENAME_BUTTON_X + UI_RENAME_BUTTON_WIDTH)) &&
+             (ui.previous_touch_y >= UI_RENAME_BUTTON_Y) &&
+             (ui.previous_touch_y < (UI_RENAME_BUTTON_Y + UI_RENAME_BUTTON_HEIGHT)))
+    {
+        ui.pending_action = UI_ACTION_FILE_RENAME_OPEN;
+        UART_SendString("UI RENAME REQUEST\r\n");
+        action_executed = true;
+    }
+    else if (!ui.dragging &&
+             (ui.mode == UI_MODE_FILE_RENAME) &&
+             (ui.pressed_rename_key >= 0))
+    {
+        int32_t released_key = ui_rename_key_at(
+            ui.previous_touch_x, ui.previous_touch_y);
+        if (released_key == ui.pressed_rename_key)
+        {
+            ui_rename_append_key((uint32_t)released_key);
+            UART_SendString("UI RENAME KEY\r\n");
+            action_executed = true;
+        }
+    }
+    else if (!ui.dragging &&
         (ui.mode == UI_MODE_ANALYZER) &&
         (ui.touch_start_y >= UI_STATUS_TOP) &&
         (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
@@ -1923,6 +2223,7 @@ static void ui_handle_touch_up(void)
     ui.touch_active = false;
     ui.dragging = false;
     ui.pressed_button = UI_BUTTON_NONE;
+    ui.pressed_rename_key = -1;
 
     if (action_executed)
     {

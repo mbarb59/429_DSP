@@ -34,4 +34,12 @@ bool RecordingCatalog_EnsureSelectedValid(void);
 /* UI_DELETE_CONFIRMATION_PATCH */
 FRESULT RecordingCatalog_DeleteFile(const char *filename);
 
+/* CONSOLE_WAV_RENAME_PATCH */
+bool RecordingCatalog_NormalizeWavFilename(
+    const char *input,
+    char *output);
+FRESULT RecordingCatalog_RenameFile(
+    const char *source,
+    const char *target);
+
 #endif

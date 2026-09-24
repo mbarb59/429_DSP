@@ -231,6 +231,112 @@ bool RecordingCatalog_EnsureSelectedValid(void)
     return false;
 }
 
+static bool filename_character_is_valid(char character)
+{
+    return ((character >= 'A') && (character <= 'Z')) ||
+           ((character >= '0') && (character <= '9')) ||
+           (character == '_');
+}
+
+bool RecordingCatalog_NormalizeWavFilename(
+    const char *input,
+    char *output)
+{
+    size_t length;
+    size_t base_length;
+
+    if ((input == NULL) || (output == NULL))
+    {
+        return false;
+    }
+
+    length = strlen(input);
+    if ((length < 5U) || (length >= RECORDING_FILENAME_CAPACITY))
+    {
+        return false;
+    }
+
+    base_length = length - 4U;
+    if ((base_length == 0U) || (base_length > 8U) ||
+        (input[base_length] != '.'))
+    {
+        return false;
+    }
+
+    for (size_t index = 0U; index < base_length; index++)
+    {
+        char character = input[index];
+        if ((character >= 'a') && (character <= 'z'))
+        {
+            character = (char)(character - 'a' + 'A');
+        }
+        if (!filename_character_is_valid(character))
+        {
+            return false;
+        }
+        output[index] = character;
+    }
+
+    if (((input[base_length + 1U] != 'W') &&
+         (input[base_length + 1U] != 'w')) ||
+        ((input[base_length + 2U] != 'A') &&
+         (input[base_length + 2U] != 'a')) ||
+        ((input[base_length + 3U] != 'V') &&
+         (input[base_length + 3U] != 'v')))
+    {
+        return false;
+    }
+
+    output[base_length] = '.';
+    output[base_length + 1U] = 'W';
+    output[base_length + 2U] = 'A';
+    output[base_length + 3U] = 'V';
+    output[base_length + 4U] = '\0';
+    return true;
+}
+
+FRESULT RecordingCatalog_RenameFile(
+    const char *source,
+    const char *target)
+{
+    FILINFO information;
+    FRESULT result;
+    char normalized_source[RECORDING_FILENAME_CAPACITY];
+    char normalized_target[RECORDING_FILENAME_CAPACITY];
+
+    if (!RecordingCatalog_NormalizeWavFilename(
+            source, normalized_source) ||
+        !RecordingCatalog_NormalizeWavFilename(
+            target, normalized_target))
+    {
+        return FR_INVALID_NAME;
+    }
+
+    if (strcmp(normalized_source, normalized_target) == 0)
+    {
+        return FR_INVALID_NAME;
+    }
+
+    result = FileSystem_Mount();
+    if (result != FR_OK) return result;
+
+    result = f_stat(normalized_source, &information);
+    if (result != FR_OK) return result;
+    if ((information.fattrib & AM_DIR) != 0U) return FR_DENIED;
+
+    result = f_stat(normalized_target, &information);
+    if (result == FR_OK) return FR_EXIST;
+    if (result != FR_NO_FILE) return result;
+
+    result = f_rename(normalized_source, normalized_target);
+    if ((result == FR_OK) &&
+        (strcmp(selected_filename, normalized_source) == 0))
+    {
+        strcpy(selected_filename, normalized_target);
+    }
+    return result;
+}
+
 FRESULT RecordingCatalog_DeleteFile(const char *filename)
 {
     FILINFO information;
