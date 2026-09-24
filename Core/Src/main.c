@@ -101,6 +101,7 @@ static void GenerateAdcTone1500Hz(
     uint32_t *phase);
 static void Console_RunRecTone5(void);
 static void Console_RunRec5(void);
+static void Console_RunRec10(void);
 static void Console_RunRecStart(void);
 static void Console_RunRecStop(void);
 static void Console_RunRecStatus(void);
@@ -137,6 +138,7 @@ static uint32_t analyzer_last_display_ms;
 
 /* UI_RECORDER_CONTROLLER_PATCH */
 /* NUMBERED_RECORDINGS_PATCH */
+/* CONSOLE_REC10_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
@@ -505,6 +507,13 @@ else if (strcmp(command, "sdread0") == 0)
         if (Analyzer_RequireStopped())
         {
             Console_RunRec5();
+        }
+    }
+    else if (strcmp(command, "rec10") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRec10();
         }
     }
     else if (strcmp(command, "recstart") == 0)
@@ -1025,6 +1034,7 @@ static void Console_PrintHelp(void)
 	"wavinfo     - Validate CAPTURE.WAV header and size\r\n"
         "rectone5    - Create five-second 1500 Hz test WAV\r\n"
     "rec5        - Record five seconds to CAPTURE.WAV\r\n"
+    "rec10       - Record ten seconds to numbered WAV\r\n"
         "recstart    - Start WAV recorder\r\n"
         "recstop     - Stop and finalize WAV recorder\r\n"
         "recstatus   - Show WAV recorder status\r\n"
@@ -1916,6 +1926,48 @@ static void Console_RunRecTone5(void)
 }
 
 /* REC5_CONSOLE_INTEGRATION */
+static void Console_RunRec10(void)
+{
+    RecorderStatus status;
+    FRESULT result;
+
+    UART_SendString("Starting ten-second WAV recording\r\n");
+    UART_SendString("Target Samples = ");
+    UART_SendDec(Capture_GetSampleRate() * 10U);
+    UART_SendString("\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Recorder is already active\r\n");
+        return;
+    }
+
+    Recorder_GetStatus(&status);
+    if (status.state != RECORDER_STATE_IDLE)
+    {
+        UART_SendString("Recorder is not idle\r\n");
+        return;
+    }
+
+    result = RecordingCatalog_StartNext();
+    if (result != FR_OK)
+    {
+        UART_SendString("Recorder file open failed, FatFs = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    if (!Capture_StartRecorder(10U))
+    {
+        UART_SendString("Ten-second DMA start failed\r\n");
+        (void)Recorder_StopRaw();
+        return;
+    }
+
+    UART_SendString("Ten-second recording started\r\n");
+}
+
 static void Console_RunRec5(void)
 {
     FRESULT result;
