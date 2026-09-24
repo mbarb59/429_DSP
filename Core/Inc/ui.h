@@ -14,7 +14,17 @@ typedef enum
     UI_ACTION_VIEW_SPECTRUM,
     UI_ACTION_FFT_BACK,
     UI_ACTION_FFT_PREVIOUS,
-    UI_ACTION_FFT_NEXT
+    UI_ACTION_FFT_NEXT,
+    UI_ACTION_BROWSER_OPEN,
+    UI_ACTION_BROWSER_BACK,
+    UI_ACTION_BROWSER_PREVIOUS,
+    UI_ACTION_BROWSER_NEXT,
+    UI_ACTION_BROWSER_REFRESH,
+    UI_ACTION_BROWSER_SELECT_ROW,
+    UI_ACTION_FILE_ACTIONS_OPEN,
+    UI_ACTION_FILE_ACTIONS_BACK,
+    UI_ACTION_FILE_INFO,
+    UI_ACTION_FILE_DELETE
 } UI_Action;
 
 typedef struct
@@ -41,10 +51,20 @@ UI_Action UI_GetPendingAction(void);
 void UI_SetRecorderStatus(
     const UI_RecorderStatus *status);
 bool UI_IsRecorderScreen(void);
+void UI_ShowRecorder(void);
 void UI_ShowWaveform(void);
 bool UI_IsWaveformScreen(void);
 void UI_ShowRecordedFft(void);
 bool UI_IsRecordedFftScreen(void);
+void UI_ShowFileBrowser(void);
+bool UI_IsFileBrowserScreen(void);
+void UI_RefreshFileBrowser(void);
+uint32_t UI_GetBrowserPendingRow(void);
+
+/* UI_FILE_ACTION_SCREEN_PATCH */
+void UI_ShowFileActions(void);
+void UI_ReturnToFileBrowser(void);
+bool UI_IsFileActionsScreen(void);
 
 
 void UI_SetRunning(bool running);

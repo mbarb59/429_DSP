@@ -14,6 +14,7 @@
 #include "ui.h"
 
 #include "display.h"
+#include "recording_catalog.h"
 #include "fft.h"
 #include "stmpe811.h"
 #include "uart.h"
@@ -66,6 +67,15 @@
 #define UI_REC_TAB_WIDTH           64
 #define UI_REC_STATUS_REFRESH_MS   100U
 
+/* UI_WAV_BROWSER_V2_PATCH */
+#define UI_FILES_X                 174U
+#define UI_FILES_Y                 158U
+#define UI_FILES_WIDTH             140U
+#define UI_FILES_HEIGHT            48U
+#define UI_FILES_RELEASE_MARGIN    12U
+#define UI_BROWSER_ROW_TOP         42U
+#define UI_BROWSER_ROW_HEIGHT      27U
+
 typedef enum
 {
     UI_BUTTON_NONE = 0,
@@ -85,7 +95,17 @@ typedef enum
     UI_BUTTON_FFT_PREVIOUS,
     UI_BUTTON_FFT_NEXT,
     UI_BUTTON_FFT_FULL,
-    UI_BUTTON_FFT_PEAK
+    UI_BUTTON_FFT_PEAK,
+    UI_BUTTON_BROWSER_BACK,
+    UI_BUTTON_BROWSER_PREVIOUS,
+    UI_BUTTON_BROWSER_NEXT,
+    UI_BUTTON_BROWSER_SELECT,
+    UI_BUTTON_BROWSER_REFRESH,
+    UI_BUTTON_FILE_ACTIONS_BACK,
+    UI_BUTTON_FILE_ACTIONS_WAVE,
+    UI_BUTTON_FILE_ACTIONS_FFT,
+    UI_BUTTON_FILE_ACTIONS_INFO,
+    UI_BUTTON_FILE_ACTIONS_DELETE
 } UI_Button;
 
 typedef enum
@@ -93,7 +113,9 @@ typedef enum
     UI_MODE_ANALYZER = 0,
     UI_MODE_RECORDER,
     UI_MODE_WAVEFORM,
-    UI_MODE_RECORDED_FFT
+    UI_MODE_RECORDED_FFT,
+    UI_MODE_FILE_BROWSER,
+    UI_MODE_FILE_ACTIONS
 } UI_Mode;
 
 typedef struct
@@ -109,6 +131,8 @@ typedef struct
     UI_Action pending_action;
     UI_RecorderStatus recorder_status;
     uint32_t last_recorder_draw_ms;
+    uint32_t browser_row;
+    uint32_t browser_pending_row;
 
     uint32_t first_bin;
     uint32_t visible_bins;
@@ -131,6 +155,8 @@ static UI_State ui;
 static void ui_draw_controls(void);
 static void ui_draw_status(void);
 static void ui_draw_recorder_body(void);
+static void ui_draw_file_browser_body(void);
+static void ui_draw_file_actions_body(void);
 static void ui_draw_waveform_body(void);
 static void ui_draw_uint(
     int32_t x,
@@ -184,6 +210,8 @@ void UI_Init(void)
     ui.recorder_status.clipping = false;
     ui.recorder_status.capture_active = false;
     ui.last_recorder_draw_ms = HAL_GetTick();
+    ui.browser_row = 0U;
+    ui.browser_pending_row = 0U;
 
     ui.first_bin = UI_FIRST_USABLE_BIN;
     ui.visible_bins = ui_full_visible_bins();
@@ -222,6 +250,20 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_ACTIONS)
+    {
+        ui_draw_file_actions_body();
+        ui.graph_dirty = false;
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_BROWSER)
+    {
+        ui_draw_file_browser_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -375,6 +417,15 @@ bool UI_IsRecorderScreen(void)
     return ui.mode == UI_MODE_RECORDER;
 }
 
+void UI_ShowRecorder(void)
+{
+    ui.mode = UI_MODE_RECORDER;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
 void UI_ShowWaveform(void)
 {
     ui.mode = UI_MODE_WAVEFORM;
@@ -430,6 +481,68 @@ void UI_ShowRecordedFft(void)
 bool UI_IsRecordedFftScreen(void)
 {
     return ui.mode == UI_MODE_RECORDED_FFT;
+}
+
+void UI_ShowFileBrowser(void)
+{
+    ui.mode = UI_MODE_FILE_BROWSER;
+    ui.running = false;
+    ui.browser_row = 0U;
+    ui.browser_pending_row = 0U;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsFileBrowserScreen(void)
+{
+    return ui.mode == UI_MODE_FILE_BROWSER;
+}
+
+void UI_ShowFileActions(void)
+{
+    ui.mode = UI_MODE_FILE_ACTIONS;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+void UI_ReturnToFileBrowser(void)
+{
+    ui.mode = UI_MODE_FILE_BROWSER;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsFileActionsScreen(void)
+{
+    return ui.mode == UI_MODE_FILE_ACTIONS;
+}
+
+void UI_RefreshFileBrowser(void)
+{
+    uint32_t count = RecordingCatalog_GetPageEntryCount();
+
+    if (count == 0U)
+    {
+        ui.browser_row = 0U;
+    }
+    else if (ui.browser_row >= count)
+    {
+        ui.browser_row = count - 1U;
+    }
+
+    ui.browser_pending_row = ui.browser_row;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+}
+
+uint32_t UI_GetBrowserPendingRow(void)
+{
+    return ui.browser_pending_row;
 }
 
 void UI_SetRunning(bool running)
@@ -497,6 +610,40 @@ uint32_t UI_GetMagnitudeMax(void)
 static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
+
+    if (ui.mode == UI_MODE_FILE_ACTIONS)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(192, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(256, COLOR_RED, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(80, 12, "WAVE", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(150, 12, "FFT", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(208, 12, "INFO", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(270, 12, "DELETE", COLOR_BLACK, COLOR_RED);
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_BROWSER)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(192, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(80, 12, "PREV", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(144, 12, "NEXT", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(208, 12, "OPEN", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(264, 12, "REFRESH", COLOR_BLACK, COLOR_MAGENTA);
+        return;
+    }
 
     if (ui.mode == UI_MODE_RECORDED_FFT)
     {
@@ -721,6 +868,84 @@ static void ui_draw_recorder_body(void)
     ui_draw_uint(248, 142,
                  ui.recorder_status.clip_count,
                  ui.recorder_status.clipping ? COLOR_RED : COLOR_YELLOW);
+
+
+    Display_FillRect(UI_FILES_X, UI_FILES_Y,
+                     UI_FILES_WIDTH, UI_FILES_HEIGHT, COLOR_BLUE);
+    Display_DrawRect(UI_FILES_X, UI_FILES_Y,
+                     UI_FILES_WIDTH, UI_FILES_HEIGHT, COLOR_WHITE);
+    Display_DrawString(218, 178, "FILES", COLOR_BLACK, COLOR_BLUE);
+}
+
+static void ui_draw_file_actions_body(void)
+{
+    const char *selected = RecordingCatalog_GetSelected();
+    FILINFO information;
+    FRESULT result;
+
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
+    Display_DrawString(10, 44, "SELECTED WAV", COLOR_CYAN, COLOR_BLACK);
+    Display_DrawString(10, 68, selected, COLOR_GREEN, COLOR_BLACK);
+
+    result = f_stat(selected, &information);
+    if (result == FR_OK)
+    {
+        Display_DrawString(10, 96, "SIZE", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(58, 96, (uint32_t)information.fsize, COLOR_YELLOW);
+        Display_DrawString(140, 96, "BYTES", COLOR_GRAY, COLOR_BLACK);
+    }
+    else
+    {
+        Display_DrawString(10, 96, "FILE NOT FOUND", COLOR_RED, COLOR_BLACK);
+    }
+
+    Display_DrawString(10, 128, "WAVE", COLOR_CYAN, COLOR_BLACK);
+    Display_DrawString(76, 128, "VIEW WAVEFORM", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(10, 150, "FFT", COLOR_GREEN, COLOR_BLACK);
+    Display_DrawString(76, 150, "VIEW SPECTRUM", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(10, 172, "INFO", COLOR_YELLOW, COLOR_BLACK);
+    Display_DrawString(76, 172, "NEXT MILESTONE", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(10, 194, "DELETE", COLOR_RED, COLOR_BLACK);
+    Display_DrawString(76, 194, "DISABLED", COLOR_GRAY, COLOR_BLACK);
+}
+
+static void ui_draw_file_browser_body(void)
+{
+    uint32_t entry_count = RecordingCatalog_GetPageEntryCount();
+
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
+
+    for (uint32_t row = 0U; row < RECORDING_BROWSER_PAGE_SIZE; row++)
+    {
+        int32_t y = (int32_t)UI_BROWSER_ROW_TOP +
+                    ((int32_t)row * (int32_t)UI_BROWSER_ROW_HEIGHT);
+        uint16_t background =
+            (row == ui.browser_row) ? COLOR_BLUE : COLOR_BLACK;
+        uint16_t border =
+            (row == ui.browser_row) ? COLOR_WHITE : COLOR_DARK_GRAY;
+        const RecordingCatalogEntry *entry =
+            RecordingCatalog_GetPageEntry(row);
+
+        Display_FillRect(4, y, 312, UI_BROWSER_ROW_HEIGHT - 2U,
+                         background);
+        Display_DrawRect(4, y, 312, UI_BROWSER_ROW_HEIGHT - 2U,
+                         border);
+
+        if ((row < entry_count) && (entry != NULL))
+        {
+            Display_DrawString(12, y + 9, entry->filename,
+                               COLOR_WHITE, background);
+            ui_draw_uint(160, y + 9, entry->file_size, COLOR_YELLOW);
+            Display_DrawString(240, y + 9, "BYTES",
+                               COLOR_GRAY, background);
+        }
+    }
 }
 
 static void ui_draw_waveform_body(void)
@@ -880,6 +1105,42 @@ static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
 
+    if (ui.mode == UI_MODE_FILE_ACTIONS)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_GRAY);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "SELECTED", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(70, UI_STATUS_TOP + 8,
+                           RecordingCatalog_GetSelected(),
+                           COLOR_GREEN, COLOR_BLACK);
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_BROWSER)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_GRAY);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "PAGE", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(40, UI_STATUS_TOP + 8,
+                     RecordingCatalog_GetPageIndex() + 1U, COLOR_YELLOW);
+        Display_DrawString(60, UI_STATUS_TOP + 8,
+                           "/", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(70, UI_STATUS_TOP + 8,
+                     RecordingCatalog_GetPageCount(), COLOR_YELLOW);
+        Display_DrawString(110, UI_STATUS_TOP + 8,
+                           "SELECTED", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(176, UI_STATUS_TOP + 8,
+                           RecordingCatalog_GetSelected(),
+                           COLOR_GREEN, COLOR_BLACK);
+        return;
+    }
+
     if (ui.mode == UI_MODE_RECORDED_FFT)
     {
         const WavFftViewerInfo *info = WavFftViewer_GetInfo();
@@ -1013,6 +1274,26 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
 {
     if (y >= UI_CONTROL_HEIGHT)
     {
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_FILE_ACTIONS)
+    {
+        if (x < 64U) return UI_BUTTON_FILE_ACTIONS_BACK;
+        if (x < 128U) return UI_BUTTON_FILE_ACTIONS_WAVE;
+        if (x < 192U) return UI_BUTTON_FILE_ACTIONS_FFT;
+        if (x < 256U) return UI_BUTTON_FILE_ACTIONS_INFO;
+        if (x < DISPLAY_WIDTH) return UI_BUTTON_FILE_ACTIONS_DELETE;
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_FILE_BROWSER)
+    {
+        if (x < 64U) return UI_BUTTON_BROWSER_BACK;
+        if (x < 128U) return UI_BUTTON_BROWSER_PREVIOUS;
+        if (x < 192U) return UI_BUTTON_BROWSER_NEXT;
+        if (x < 256U) return UI_BUTTON_BROWSER_SELECT;
+        if (x < DISPLAY_WIDTH) return UI_BUTTON_BROWSER_REFRESH;
         return UI_BUTTON_NONE;
     }
 
@@ -1164,6 +1445,56 @@ static void ui_execute_button(UI_Button button)
             UART_SendString("UI RECORDED SPECTRUM REQUEST\r\n");
             break;
 
+        case UI_BUTTON_BROWSER_BACK:
+            ui.pending_action = UI_ACTION_BROWSER_BACK;
+            UART_SendString("UI FILE BROWSER BACK REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_BROWSER_PREVIOUS:
+            ui.pending_action = UI_ACTION_BROWSER_PREVIOUS;
+            UART_SendString("UI FILES PREV REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_BROWSER_NEXT:
+            ui.pending_action = UI_ACTION_BROWSER_NEXT;
+            UART_SendString("UI FILES NEXT REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_BROWSER_SELECT:
+            ui.pending_action = UI_ACTION_FILE_ACTIONS_OPEN;
+            UART_SendString("UI FILE ACTIONS REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_BROWSER_REFRESH:
+            ui.pending_action = UI_ACTION_BROWSER_REFRESH;
+            UART_SendString("UI FILES REFRESH REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FILE_ACTIONS_BACK:
+            ui.pending_action = UI_ACTION_FILE_ACTIONS_BACK;
+            UART_SendString("UI FILE ACTIONS BACK REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FILE_ACTIONS_WAVE:
+            ui.pending_action = UI_ACTION_VIEW_WAVEFORM;
+            UART_SendString("UI FILE ACTIONS WAVE REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FILE_ACTIONS_FFT:
+            ui.pending_action = UI_ACTION_VIEW_SPECTRUM;
+            UART_SendString("UI FILE ACTIONS FFT REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FILE_ACTIONS_INFO:
+            ui.pending_action = UI_ACTION_FILE_INFO;
+            UART_SendString("UI FILE INFO REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_FILE_ACTIONS_DELETE:
+            ui.pending_action = UI_ACTION_FILE_DELETE;
+            UART_SendString("UI FILE DELETE REQUEST\r\n");
+            break;
+
         case UI_BUTTON_FFT_BACK:
             ui.mode = UI_MODE_RECORDER;
             ui.graph_dirty = true;
@@ -1270,7 +1601,56 @@ static void ui_handle_touch_up(void)
 {
     bool action_executed = false;
 
-    if (!ui.dragging &&
+    /* UI_FILES_TOUCH_FIX
+     * Require the press to begin inside FILES, but allow the release
+     * to drift slightly because this is a resistive touchscreen.
+     */
+    if ((ui.mode == UI_MODE_RECORDER) &&
+        (ui.touch_start_x >= UI_FILES_X) &&
+        (ui.touch_start_x < (UI_FILES_X + UI_FILES_WIDTH)) &&
+        (ui.touch_start_y >= UI_FILES_Y) &&
+        (ui.touch_start_y < (UI_FILES_Y + UI_FILES_HEIGHT)) &&
+        ((uint32_t)ui.previous_touch_x + UI_FILES_RELEASE_MARGIN >=
+         UI_FILES_X) &&
+        (ui.previous_touch_x < (UI_FILES_X + UI_FILES_WIDTH +
+                                UI_FILES_RELEASE_MARGIN)) &&
+        ((uint32_t)ui.previous_touch_y + UI_FILES_RELEASE_MARGIN >=
+         UI_FILES_Y) &&
+        (ui.previous_touch_y < (UI_FILES_Y + UI_FILES_HEIGHT +
+                                UI_FILES_RELEASE_MARGIN)))
+    {
+        ui.pending_action = UI_ACTION_BROWSER_OPEN;
+        UART_SendString("UI FILE BROWSER REQUEST\r\n");
+        action_executed = true;
+    }
+    else if (!ui.dragging &&
+             (ui.mode == UI_MODE_FILE_BROWSER) &&
+             (ui.touch_start_y >= UI_BROWSER_ROW_TOP) &&
+             (ui.touch_start_y < (UI_BROWSER_ROW_TOP +
+              (RECORDING_BROWSER_PAGE_SIZE * UI_BROWSER_ROW_HEIGHT))) &&
+             (ui.previous_touch_y >= UI_BROWSER_ROW_TOP) &&
+             (ui.previous_touch_y < (UI_BROWSER_ROW_TOP +
+              (RECORDING_BROWSER_PAGE_SIZE * UI_BROWSER_ROW_HEIGHT))))
+    {
+        uint32_t start_row =
+            (ui.touch_start_y - UI_BROWSER_ROW_TOP) /
+            UI_BROWSER_ROW_HEIGHT;
+        uint32_t release_row =
+            (ui.previous_touch_y - UI_BROWSER_ROW_TOP) /
+            UI_BROWSER_ROW_HEIGHT;
+
+        if ((start_row == release_row) &&
+            (start_row < RecordingCatalog_GetPageEntryCount()))
+        {
+            ui.browser_row = start_row;
+            ui.browser_pending_row = start_row;
+            ui.pending_action = UI_ACTION_BROWSER_SELECT_ROW;
+            ui.graph_dirty = true;
+            UART_SendString("UI FILE ROW SELECT REQUEST\r\n");
+            action_executed = true;
+        }
+    }
+    else if (!ui.dragging &&
         (ui.mode == UI_MODE_ANALYZER) &&
         (ui.touch_start_y >= UI_STATUS_TOP) &&
         (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&

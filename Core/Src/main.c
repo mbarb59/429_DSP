@@ -137,6 +137,9 @@ static uint32_t analyzer_last_display_ms;
 /* NUMBERED_RECORDINGS_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
+/* UI_WAV_BROWSER_V2_PATCH */
+/* UI_FILE_ACTION_SCREEN_PATCH */
+/* UI_DEFAULT_WAV_SELECTION_PATCH */
 #define UI_RECORDER_STATUS_PERIOD_MS  100U
 static uint32_t ui_recorder_last_status_ms;
 
@@ -3706,6 +3709,147 @@ static void UI_ProcessRecorderActions(void)
         case UI_ACTION_FFT_BACK:
             WavFftViewer_End();
             UART_SendString("UI recorded FFT closed\r\n");
+            break;
+
+        case UI_ACTION_BROWSER_OPEN:
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before file browser\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before file browser\r\n");
+                break;
+            }
+
+            result = RecordingCatalog_LoadPage(0U);
+            if (result == FR_OK)
+            {
+                /* UI_DEFAULT_WAV_SELECTION_PATCH */
+                if (RecordingCatalog_EnsureSelectedValid())
+                {
+                    UART_SendString("UI selected WAV: ");
+                    UART_SendString(RecordingCatalog_GetSelected());
+                    UART_SendString("\r\n");
+                }
+                else
+                {
+                    UART_SendString("UI file browser has no WAV files\r\n");
+                }
+
+                UI_ShowFileBrowser();
+                UART_SendString("UI file browser loaded\r\n");
+            }
+            else
+            {
+                UART_SendString("UI file browser load failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+            }
+            break;
+
+        case UI_ACTION_BROWSER_BACK:
+            UI_ShowRecorder();
+            UART_SendString("UI RECORDER SCREEN\r\n");
+            break;
+
+        case UI_ACTION_BROWSER_PREVIOUS:
+        {
+            uint32_t page = RecordingCatalog_GetPageIndex();
+            if (page > 0U)
+            {
+                page--;
+            }
+            result = RecordingCatalog_LoadPage(page);
+            if (result == FR_OK)
+            {
+                UI_RefreshFileBrowser();
+            }
+            break;
+        }
+
+        case UI_ACTION_BROWSER_NEXT:
+        {
+            uint32_t page = RecordingCatalog_GetPageIndex();
+            uint32_t page_count = RecordingCatalog_GetPageCount();
+            if ((page + 1U) < page_count)
+            {
+                page++;
+            }
+            result = RecordingCatalog_LoadPage(page);
+            if (result == FR_OK)
+            {
+                UI_RefreshFileBrowser();
+            }
+            break;
+        }
+
+        case UI_ACTION_BROWSER_REFRESH:
+            result = RecordingCatalog_LoadPage(
+                RecordingCatalog_GetPageIndex());
+            if (result == FR_OK)
+            {
+                UI_RefreshFileBrowser();
+            }
+            break;
+
+        case UI_ACTION_BROWSER_SELECT_ROW:
+            if (RecordingCatalog_SelectPageEntry(
+                    UI_GetBrowserPendingRow()))
+            {
+                UART_SendString("UI selected WAV: ");
+                UART_SendString(RecordingCatalog_GetSelected());
+                UART_SendString("\r\n");
+                UI_RefreshFileBrowser();
+            }
+            else
+            {
+                UART_SendString("UI file selection failed\r\n");
+            }
+            break;
+
+        case UI_ACTION_FILE_ACTIONS_OPEN:
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before file actions\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before file actions\r\n");
+                break;
+            }
+
+            if (!RecordingCatalog_SelectPageEntry(
+                    UI_GetBrowserPendingRow()))
+            {
+                UART_SendString("Select a valid WAV before OPEN\r\n");
+                break;
+            }
+
+            UART_SendString("UI selected WAV: ");
+            UART_SendString(RecordingCatalog_GetSelected());
+            UART_SendString("\r\n");
+            UI_ShowFileActions();
+            UART_SendString("UI file actions loaded\r\n");
+            break;
+
+        case UI_ACTION_FILE_ACTIONS_BACK:
+            UI_ReturnToFileBrowser();
+            UART_SendString("UI file browser restored\r\n");
+            break;
+
+        case UI_ACTION_FILE_INFO:
+            UART_SendString("UI file INFO is the next milestone\r\n");
+            break;
+
+        case UI_ACTION_FILE_DELETE:
+            UART_SendString("UI file DELETE is disabled\r\n");
             break;
 
         case UI_ACTION_NONE:
