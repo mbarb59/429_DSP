@@ -27,6 +27,19 @@ typedef enum
     UI_ACTION_FILE_DELETE
 } UI_Action;
 
+/* UI_WAV_INFO_SCREEN_PATCH */
+typedef struct
+{
+    char filename[13];
+    uint32_t file_size;
+    uint32_t sample_rate;
+    uint32_t data_bytes;
+    uint32_t duration_ms;
+    uint16_t channels;
+    uint16_t bits_per_sample;
+    bool valid;
+} UI_WavInfo;
+
 typedef struct
 {
     uint32_t recorder_state;
@@ -65,6 +78,8 @@ uint32_t UI_GetBrowserPendingRow(void);
 void UI_ShowFileActions(void);
 void UI_ReturnToFileBrowser(void);
 bool UI_IsFileActionsScreen(void);
+void UI_ShowWavInfo(const UI_WavInfo *info);
+bool UI_IsWavInfoScreen(void);
 
 
 void UI_SetRunning(bool running);

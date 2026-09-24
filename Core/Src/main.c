@@ -52,6 +52,7 @@ static void Error_Handler(void);
 static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
 static void UI_ProcessRecorderActions(void);
+static FRESULT UI_LoadSelectedWavInfo(UI_WavInfo *info);
 static void UI_UpdateRecorderStatus(void);
 static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
@@ -140,6 +141,7 @@ static uint32_t analyzer_last_display_ms;
 /* UI_WAV_BROWSER_V2_PATCH */
 /* UI_FILE_ACTION_SCREEN_PATCH */
 /* UI_DEFAULT_WAV_SELECTION_PATCH */
+/* UI_WAV_INFO_SCREEN_PATCH */
 #define UI_RECORDER_STATUS_PERIOD_MS  100U
 static uint32_t ui_recorder_last_status_ms;
 
@@ -3557,6 +3559,88 @@ static void Spectrum_Draw(void)
 
 }
 
+static FRESULT UI_LoadSelectedWavInfo(UI_WavInfo *info)
+{
+    FIL file;
+    UINT bytes_read = 0U;
+    FRESULT result;
+    uint8_t header[44];
+    uint32_t riff_size;
+    uint32_t format_chunk_size;
+    uint32_t byte_rate;
+    uint32_t expected_file_size;
+    uint16_t audio_format;
+    uint16_t block_alignment;
+    const char *filename = RecordingCatalog_GetSelected();
+
+    if ((info == NULL) || (filename == NULL) || (filename[0] == '\0'))
+    {
+        return FR_INVALID_NAME;
+    }
+
+    memset(info, 0, sizeof(*info));
+    strncpy(info->filename, filename, sizeof(info->filename) - 1U);
+    info->filename[sizeof(info->filename) - 1U] = '\0';
+
+    result = FileSystem_Mount();
+    if (result != FR_OK)
+    {
+        return result;
+    }
+
+    result = f_open(&file, filename, FA_READ);
+    if (result != FR_OK)
+    {
+        return result;
+    }
+
+    info->file_size = (uint32_t)f_size(&file);
+    result = f_read(&file, header, sizeof(header), &bytes_read);
+    (void)f_close(&file);
+
+    if (result != FR_OK)
+    {
+        return result;
+    }
+    if (bytes_read != sizeof(header))
+    {
+        return FR_INVALID_OBJECT;
+    }
+
+    riff_size = Console_ReadLe32(&header[4]);
+    format_chunk_size = Console_ReadLe32(&header[16]);
+    audio_format = Console_ReadLe16(&header[20]);
+    info->channels = Console_ReadLe16(&header[22]);
+    info->sample_rate = Console_ReadLe32(&header[24]);
+    byte_rate = Console_ReadLe32(&header[28]);
+    block_alignment = Console_ReadLe16(&header[32]);
+    info->bits_per_sample = Console_ReadLe16(&header[34]);
+    info->data_bytes = Console_ReadLe32(&header[40]);
+    expected_file_size = info->data_bytes + 44U;
+
+    if (byte_rate != 0U)
+    {
+        info->duration_ms =
+            (uint32_t)(((uint64_t)info->data_bytes * 1000U) / byte_rate);
+    }
+
+    info->valid =
+        (memcmp(&header[0], "RIFF", 4U) == 0) &&
+        (memcmp(&header[8], "WAVE", 4U) == 0) &&
+        (memcmp(&header[12], "fmt ", 4U) == 0) &&
+        (memcmp(&header[36], "data", 4U) == 0) &&
+        (riff_size == (info->file_size - 8U)) &&
+        (format_chunk_size == 16U) &&
+        (audio_format == 1U) &&
+        (info->channels == 1U) &&
+        (info->bits_per_sample == 16U) &&
+        (block_alignment == 2U) &&
+        (byte_rate == (info->sample_rate * (uint32_t)block_alignment)) &&
+        (info->file_size == expected_file_size);
+
+    return FR_OK;
+}
+
 static void UI_ProcessRecorderActions(void)
 {
     UI_Action action = UI_GetPendingAction();
@@ -3845,8 +3929,25 @@ static void UI_ProcessRecorderActions(void)
             break;
 
         case UI_ACTION_FILE_INFO:
-            UART_SendString("UI file INFO is the next milestone\r\n");
+        {
+            UI_WavInfo info;
+
+            result = UI_LoadSelectedWavInfo(&info);
+            if (result == FR_OK)
+            {
+                UI_ShowWavInfo(&info);
+                UART_SendString("UI WAV info loaded: ");
+                UART_SendString(info.filename);
+                UART_SendString("\r\n");
+            }
+            else
+            {
+                UART_SendString("UI WAV info load failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+            }
             break;
+        }
 
         case UI_ACTION_FILE_DELETE:
             UART_SendString("UI file DELETE is disabled\r\n");

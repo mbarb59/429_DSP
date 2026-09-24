@@ -21,6 +21,8 @@
 #include "wav_viewer.h"
 #include "wav_fft_viewer.h"
 
+#include <string.h>
+
 #include "stm32f4xx_hal.h"
 
 #include <stdbool.h>
@@ -105,7 +107,8 @@ typedef enum
     UI_BUTTON_FILE_ACTIONS_WAVE,
     UI_BUTTON_FILE_ACTIONS_FFT,
     UI_BUTTON_FILE_ACTIONS_INFO,
-    UI_BUTTON_FILE_ACTIONS_DELETE
+    UI_BUTTON_FILE_ACTIONS_DELETE,
+    UI_BUTTON_WAV_INFO_BACK
 } UI_Button;
 
 typedef enum
@@ -115,7 +118,8 @@ typedef enum
     UI_MODE_WAVEFORM,
     UI_MODE_RECORDED_FFT,
     UI_MODE_FILE_BROWSER,
-    UI_MODE_FILE_ACTIONS
+    UI_MODE_FILE_ACTIONS,
+    UI_MODE_WAV_INFO
 } UI_Mode;
 
 typedef struct
@@ -130,6 +134,7 @@ typedef struct
     UI_Mode mode;
     UI_Action pending_action;
     UI_RecorderStatus recorder_status;
+    UI_WavInfo wav_info;
     uint32_t last_recorder_draw_ms;
     uint32_t browser_row;
     uint32_t browser_pending_row;
@@ -157,6 +162,7 @@ static void ui_draw_status(void);
 static void ui_draw_recorder_body(void);
 static void ui_draw_file_browser_body(void);
 static void ui_draw_file_actions_body(void);
+static void ui_draw_wav_info_body(void);
 static void ui_draw_waveform_body(void);
 static void ui_draw_uint(
     int32_t x,
@@ -199,6 +205,7 @@ void UI_Init(void)
     ui.controls_dirty = true;
     ui.mode = UI_MODE_ANALYZER;
     ui.pending_action = UI_ACTION_NONE;
+    memset(&ui.wav_info, 0, sizeof(ui.wav_info));
     ui.recorder_status.recorder_state = 0U;
     ui.recorder_status.captured_samples = 0U;
     ui.recorder_status.queued_bytes = 0U;
@@ -250,6 +257,13 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_WAV_INFO)
+    {
+        ui_draw_wav_info_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -522,6 +536,26 @@ bool UI_IsFileActionsScreen(void)
     return ui.mode == UI_MODE_FILE_ACTIONS;
 }
 
+void UI_ShowWavInfo(const UI_WavInfo *info)
+{
+    if (info == NULL)
+    {
+        return;
+    }
+
+    ui.wav_info = *info;
+    ui.mode = UI_MODE_WAV_INFO;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsWavInfoScreen(void)
+{
+    return ui.mode == UI_MODE_WAV_INFO;
+}
+
 void UI_RefreshFileBrowser(void)
 {
     uint32_t count = RecordingCatalog_GetPageEntryCount();
@@ -610,6 +644,20 @@ uint32_t UI_GetMagnitudeMax(void)
 static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
+
+    if (ui.mode == UI_MODE_WAV_INFO)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(128, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(192, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(256, COLOR_DARK_GRAY, COLOR_GRAY);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(92, 12, "WAV FILE INFO", COLOR_WHITE, COLOR_BLACK);
+        return;
+    }
 
     if (ui.mode == UI_MODE_FILE_ACTIONS)
     {
@@ -877,6 +925,39 @@ static void ui_draw_recorder_body(void)
     Display_DrawString(218, 178, "FILES", COLOR_BLACK, COLOR_BLUE);
 }
 
+static void ui_draw_wav_info_body(void)
+{
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
+
+    Display_DrawString(8, 40, "FILE", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(86, 40, ui.wav_info.filename,
+                       COLOR_GREEN, COLOR_BLACK);
+    Display_DrawString(8, 62, "SIZE", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 62, ui.wav_info.file_size, COLOR_YELLOW);
+    Display_DrawString(174, 62, "BYTES", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(8, 84, "RATE", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 84, ui.wav_info.sample_rate, COLOR_YELLOW);
+    Display_DrawString(174, 84, "HZ", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(8, 106, "CHANNELS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 106, ui.wav_info.channels, COLOR_YELLOW);
+    Display_DrawString(8, 128, "BITS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 128, ui.wav_info.bits_per_sample, COLOR_YELLOW);
+    Display_DrawString(8, 150, "DATA", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 150, ui.wav_info.data_bytes, COLOR_YELLOW);
+    Display_DrawString(174, 150, "BYTES", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(8, 172, "DURATION", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(86, 172, ui.wav_info.duration_ms, COLOR_YELLOW);
+    Display_DrawString(174, 172, "MS", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(8, 194, "FORMAT", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(86, 194,
+                       ui.wav_info.valid ? "VALID PCM WAV" : "INVALID WAV",
+                       ui.wav_info.valid ? COLOR_GREEN : COLOR_RED,
+                       COLOR_BLACK);
+}
+
 static void ui_draw_file_actions_body(void)
 {
     const char *selected = RecordingCatalog_GetSelected();
@@ -1105,6 +1186,21 @@ static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
 
+    if (ui.mode == UI_MODE_WAV_INFO)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_GRAY);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "WAV INFO", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(88, UI_STATUS_TOP + 8,
+                           ui.wav_info.valid ? "VALID" : "INVALID",
+                           ui.wav_info.valid ? COLOR_GREEN : COLOR_RED,
+                           COLOR_BLACK);
+        return;
+    }
+
     if (ui.mode == UI_MODE_FILE_ACTIONS)
     {
         Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
@@ -1274,6 +1370,15 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
 {
     if (y >= UI_CONTROL_HEIGHT)
     {
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_WAV_INFO)
+    {
+        if (x < 64U)
+        {
+            return UI_BUTTON_WAV_INFO_BACK;
+        }
         return UI_BUTTON_NONE;
     }
 
@@ -1468,6 +1573,11 @@ static void ui_execute_button(UI_Button button)
         case UI_BUTTON_BROWSER_REFRESH:
             ui.pending_action = UI_ACTION_BROWSER_REFRESH;
             UART_SendString("UI FILES REFRESH REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_WAV_INFO_BACK:
+            UI_ShowFileActions();
+            UART_SendString("UI WAV INFO BACK\r\n");
             break;
 
         case UI_BUTTON_FILE_ACTIONS_BACK:
