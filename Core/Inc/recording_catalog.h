@@ -31,4 +31,7 @@ bool RecordingCatalog_SelectPageEntry(uint32_t index);
 /* UI_DEFAULT_WAV_SELECTION_PATCH */
 bool RecordingCatalog_EnsureSelectedValid(void);
 
+/* UI_DELETE_CONFIRMATION_PATCH */
+FRESULT RecordingCatalog_DeleteFile(const char *filename);
+
 #endif

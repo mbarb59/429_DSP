@@ -24,7 +24,9 @@ typedef enum
     UI_ACTION_FILE_ACTIONS_OPEN,
     UI_ACTION_FILE_ACTIONS_BACK,
     UI_ACTION_FILE_INFO,
-    UI_ACTION_FILE_DELETE
+    UI_ACTION_FILE_DELETE,
+    UI_ACTION_FILE_DELETE_CANCEL,
+    UI_ACTION_FILE_DELETE_CONFIRM
 } UI_Action;
 
 /* UI_WAV_INFO_SCREEN_PATCH */
@@ -80,6 +82,13 @@ void UI_ReturnToFileBrowser(void);
 bool UI_IsFileActionsScreen(void);
 void UI_ShowWavInfo(const UI_WavInfo *info);
 bool UI_IsWavInfoScreen(void);
+
+
+/* UI_DELETE_CONFIRMATION_PATCH */
+void UI_ShowDeleteConfirmation(const char *filename);
+void UI_ReturnToFileActions(void);
+bool UI_IsDeleteConfirmationScreen(void);
+const char *UI_GetDeleteFilename(void);
 
 
 void UI_SetRunning(bool running);

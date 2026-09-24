@@ -231,6 +231,52 @@ bool RecordingCatalog_EnsureSelectedValid(void)
     return false;
 }
 
+FRESULT RecordingCatalog_DeleteFile(const char *filename)
+{
+    FILINFO information;
+    FRESULT result;
+    size_t length;
+
+    if (filename == NULL)
+    {
+        return FR_INVALID_NAME;
+    }
+
+    length = strlen(filename);
+    if ((length == 0U) ||
+        (length >= RECORDING_FILENAME_CAPACITY) ||
+        !filename_is_wav(filename))
+    {
+        return FR_INVALID_NAME;
+    }
+
+    result = FileSystem_Mount();
+    if (result != FR_OK)
+    {
+        return result;
+    }
+
+    result = f_stat(filename, &information);
+    if (result != FR_OK)
+    {
+        return result;
+    }
+
+    if ((information.fattrib & AM_DIR) != 0U)
+    {
+        return FR_DENIED;
+    }
+
+    result = f_unlink(filename);
+    if ((result == FR_OK) &&
+        (strcmp(selected_filename, filename) == 0))
+    {
+        selected_filename[0] = '\0';
+    }
+
+    return result;
+}
+
 FRESULT RecordingCatalog_StartNext(void)
 {
     FILINFO info;

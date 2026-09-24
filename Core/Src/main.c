@@ -142,6 +142,7 @@ static uint32_t analyzer_last_display_ms;
 /* UI_FILE_ACTION_SCREEN_PATCH */
 /* UI_DEFAULT_WAV_SELECTION_PATCH */
 /* UI_WAV_INFO_SCREEN_PATCH */
+/* UI_DELETE_CONFIRMATION_PATCH */
 #define UI_RECORDER_STATUS_PERIOD_MS  100U
 static uint32_t ui_recorder_last_status_ms;
 
@@ -3950,8 +3951,102 @@ static void UI_ProcessRecorderActions(void)
         }
 
         case UI_ACTION_FILE_DELETE:
-            UART_SendString("UI file DELETE is disabled\r\n");
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before delete\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before delete\r\n");
+                break;
+            }
+
+            if (!RecordingCatalog_EnsureSelectedValid())
+            {
+                UART_SendString("Select a valid WAV before delete\r\n");
+                break;
+            }
+
+            UI_ShowDeleteConfirmation(RecordingCatalog_GetSelected());
+            UART_SendString("UI delete confirmation loaded: ");
+            UART_SendString(RecordingCatalog_GetSelected());
+            UART_SendString("\r\n");
             break;
+
+        case UI_ACTION_FILE_DELETE_CANCEL:
+            UI_ReturnToFileActions();
+            UART_SendString("UI delete cancelled\r\n");
+            break;
+
+        case UI_ACTION_FILE_DELETE_CONFIRM:
+        {
+            char deleted_name[RECORDING_FILENAME_CAPACITY];
+            uint32_t page;
+
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("Stop recording before delete\r\n");
+                UI_ReturnToFileActions();
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("Wait for recorder IDLE before delete\r\n");
+                UI_ReturnToFileActions();
+                break;
+            }
+
+            strncpy(deleted_name,
+                    UI_GetDeleteFilename(),
+                    sizeof(deleted_name) - 1U);
+            deleted_name[sizeof(deleted_name) - 1U] = '\0';
+
+            WavFftViewer_End();
+            result = RecordingCatalog_DeleteFile(deleted_name);
+            if (result != FR_OK)
+            {
+                UART_SendString("UI delete failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+                UI_ReturnToFileActions();
+                break;
+            }
+
+            UART_SendString("UI delete OK: ");
+            UART_SendString(deleted_name);
+            UART_SendString("\r\n");
+
+            page = RecordingCatalog_GetPageIndex();
+            result = RecordingCatalog_LoadPage(page);
+            if (result == FR_OK)
+            {
+                if (RecordingCatalog_EnsureSelectedValid())
+                {
+                    UART_SendString("UI selected WAV: ");
+                    UART_SendString(RecordingCatalog_GetSelected());
+                    UART_SendString("\r\n");
+                }
+                else
+                {
+                    UART_SendString("UI file browser has no WAV files\r\n");
+                }
+                UI_ReturnToFileBrowser();
+                UI_RefreshFileBrowser();
+            }
+            else
+            {
+                UART_SendString("UI browser refresh failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+                UI_ShowRecorder();
+            }
+            break;
+        }
 
         case UI_ACTION_NONE:
         default:

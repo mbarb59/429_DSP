@@ -108,7 +108,10 @@ typedef enum
     UI_BUTTON_FILE_ACTIONS_FFT,
     UI_BUTTON_FILE_ACTIONS_INFO,
     UI_BUTTON_FILE_ACTIONS_DELETE,
-    UI_BUTTON_WAV_INFO_BACK
+    UI_BUTTON_WAV_INFO_BACK,
+    UI_BUTTON_DELETE_BACK,
+    UI_BUTTON_DELETE_CANCEL,
+    UI_BUTTON_DELETE_CONFIRM
 } UI_Button;
 
 typedef enum
@@ -119,7 +122,8 @@ typedef enum
     UI_MODE_RECORDED_FFT,
     UI_MODE_FILE_BROWSER,
     UI_MODE_FILE_ACTIONS,
-    UI_MODE_WAV_INFO
+    UI_MODE_WAV_INFO,
+    UI_MODE_FILE_DELETE_CONFIRM
 } UI_Mode;
 
 typedef struct
@@ -135,6 +139,7 @@ typedef struct
     UI_Action pending_action;
     UI_RecorderStatus recorder_status;
     UI_WavInfo wav_info;
+    char delete_filename[RECORDING_FILENAME_CAPACITY];
     uint32_t last_recorder_draw_ms;
     uint32_t browser_row;
     uint32_t browser_pending_row;
@@ -163,6 +168,7 @@ static void ui_draw_recorder_body(void);
 static void ui_draw_file_browser_body(void);
 static void ui_draw_file_actions_body(void);
 static void ui_draw_wav_info_body(void);
+static void ui_draw_delete_confirmation_body(void);
 static void ui_draw_waveform_body(void);
 static void ui_draw_uint(
     int32_t x,
@@ -206,6 +212,7 @@ void UI_Init(void)
     ui.mode = UI_MODE_ANALYZER;
     ui.pending_action = UI_ACTION_NONE;
     memset(&ui.wav_info, 0, sizeof(ui.wav_info));
+    ui.delete_filename[0] = '\0';
     ui.recorder_status.recorder_state = 0U;
     ui.recorder_status.captured_samples = 0U;
     ui.recorder_status.queued_bytes = 0U;
@@ -257,6 +264,13 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
+    {
+        ui_draw_delete_confirmation_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -556,6 +570,39 @@ bool UI_IsWavInfoScreen(void)
     return ui.mode == UI_MODE_WAV_INFO;
 }
 
+void UI_ShowDeleteConfirmation(const char *filename)
+{
+    if (filename == NULL)
+    {
+        return;
+    }
+
+    strncpy(ui.delete_filename,
+            filename,
+            sizeof(ui.delete_filename) - 1U);
+    ui.delete_filename[sizeof(ui.delete_filename) - 1U] = '\0';
+    ui.mode = UI_MODE_FILE_DELETE_CONFIRM;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+void UI_ReturnToFileActions(void)
+{
+    UI_ShowFileActions();
+}
+
+bool UI_IsDeleteConfirmationScreen(void)
+{
+    return ui.mode == UI_MODE_FILE_DELETE_CONFIRM;
+}
+
+const char *UI_GetDeleteFilename(void)
+{
+    return ui.delete_filename;
+}
+
 void UI_RefreshFileBrowser(void)
 {
     uint32_t count = RecordingCatalog_GetPageEntryCount();
@@ -644,6 +691,21 @@ uint32_t UI_GetMagnitudeMax(void)
 static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
+
+    if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(192, COLOR_DARK_GRAY, COLOR_GRAY);
+        ui_draw_button(256, COLOR_RED, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(72, 12, "CANCEL", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(260, 12, "CONFIRM", COLOR_WHITE, COLOR_RED);
+        return;
+    }
 
     if (ui.mode == UI_MODE_WAV_INFO)
     {
@@ -925,6 +987,39 @@ static void ui_draw_recorder_body(void)
     Display_DrawString(218, 178, "FILES", COLOR_BLACK, COLOR_BLUE);
 }
 
+static void ui_draw_delete_confirmation_body(void)
+{
+    FILINFO information;
+    FRESULT result;
+
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_RED);
+
+    Display_DrawString(66, 48, "DELETE WAV FILE?",
+                       COLOR_RED, COLOR_BLACK);
+    Display_DrawString(94, 82, ui.delete_filename,
+                       COLOR_GREEN, COLOR_BLACK);
+
+    result = f_stat(ui.delete_filename, &information);
+    if (result == FR_OK)
+    {
+        ui_draw_uint(92, 110, (uint32_t)information.fsize, COLOR_YELLOW);
+        Display_DrawString(176, 110, "BYTES", COLOR_GRAY, COLOR_BLACK);
+    }
+    else
+    {
+        Display_DrawString(82, 110, "FILE NOT FOUND",
+                           COLOR_RED, COLOR_BLACK);
+    }
+
+    Display_DrawString(54, 148, "THIS CANNOT BE UNDONE",
+                       COLOR_YELLOW, COLOR_BLACK);
+    Display_DrawString(44, 184, "PRESS CONFIRM TO DELETE",
+                       COLOR_WHITE, COLOR_BLACK);
+}
+
 static void ui_draw_wav_info_body(void)
 {
     Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
@@ -1186,6 +1281,19 @@ static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
 
+    if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_RED);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "DELETE TARGET", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(112, UI_STATUS_TOP + 8,
+                           ui.delete_filename, COLOR_RED, COLOR_BLACK);
+        return;
+    }
+
     if (ui.mode == UI_MODE_WAV_INFO)
     {
         Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
@@ -1370,6 +1478,14 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
 {
     if (y >= UI_CONTROL_HEIGHT)
     {
+        return UI_BUTTON_NONE;
+    }
+
+    if (ui.mode == UI_MODE_FILE_DELETE_CONFIRM)
+    {
+        if (x < 64U) return UI_BUTTON_DELETE_BACK;
+        if (x < 128U) return UI_BUTTON_DELETE_CANCEL;
+        if (x >= 256U) return UI_BUTTON_DELETE_CONFIRM;
         return UI_BUTTON_NONE;
     }
 
@@ -1603,6 +1719,17 @@ static void ui_execute_button(UI_Button button)
         case UI_BUTTON_FILE_ACTIONS_DELETE:
             ui.pending_action = UI_ACTION_FILE_DELETE;
             UART_SendString("UI FILE DELETE REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_DELETE_BACK:
+        case UI_BUTTON_DELETE_CANCEL:
+            ui.pending_action = UI_ACTION_FILE_DELETE_CANCEL;
+            UART_SendString("UI DELETE CANCEL REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_DELETE_CONFIRM:
+            ui.pending_action = UI_ACTION_FILE_DELETE_CONFIRM;
+            UART_SendString("UI DELETE CONFIRM REQUEST\r\n");
             break;
 
         case UI_BUTTON_FFT_BACK:
