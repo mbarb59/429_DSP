@@ -306,17 +306,10 @@ main_c = once(main_c, 'static void UI_ProcessRecorderActions(void);\n',
 static FRESULT UI_LoadSelectedWavInfo(UI_WavInfo *info);
 ''', 'recorder action prototype')
 
-main_c = once(
-    main_c,
-    '''/* UI_FILE_ACTION_SCREEN_PATCH */
-/* UI_DEFAULT_WAV_SELECTION_PATCH */
-#define UI_RECORDER_STATUS_PERIOD_MS''',
-    '''/* UI_FILE_ACTION_SCREEN_PATCH */
-/* UI_DEFAULT_WAV_SELECTION_PATCH */
+main_c = once(main_c, '/* UI_DEFAULT_WAV_SELECTION_PATCH */\n',
+'''/* UI_DEFAULT_WAV_SELECTION_PATCH */
 /* UI_WAV_INFO_SCREEN_PATCH */
-#define UI_RECORDER_STATUS_PERIOD_MS''',
-    'top-level feature marker block',
-)
+''', 'default-selection marker')
 
 helper = '''static FRESULT UI_LoadSelectedWavInfo(UI_WavInfo *info)
 {
