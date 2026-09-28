@@ -28,7 +28,8 @@ typedef enum
     UI_ACTION_FILE_DELETE_CANCEL,
     UI_ACTION_FILE_DELETE_CONFIRM,
     UI_ACTION_FILE_RENAME_OPEN,
-    UI_ACTION_FILE_RENAME_SAVE
+    UI_ACTION_FILE_RENAME_SAVE,
+    UI_ACTION_RECORD_DURATION
 } UI_Action;
 
 /* UI_WAV_INFO_SCREEN_PATCH */
@@ -68,6 +69,11 @@ UI_Action UI_GetPendingAction(void);
 void UI_SetRecorderStatus(
     const UI_RecorderStatus *status);
 bool UI_IsRecorderScreen(void);
+
+/* UI_RECORD_DURATION_SELECTOR_PATCH */
+void UI_ShowRecordDurationSelector(void);
+bool UI_IsRecordDurationSelectorScreen(void);
+uint32_t UI_GetRequestedRecordingSeconds(void);
 void UI_ShowRecorder(void);
 void UI_ShowWaveform(void);
 bool UI_IsWaveformScreen(void);

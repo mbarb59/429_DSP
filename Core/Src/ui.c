@@ -126,7 +126,12 @@ typedef enum
     UI_BUTTON_RENAME_CLEAR,
     UI_BUTTON_RENAME_BACKSPACE,
     UI_BUTTON_RENAME_CANCEL,
-    UI_BUTTON_RENAME_SAVE
+    UI_BUTTON_RENAME_SAVE,
+    UI_BUTTON_DURATION_BACK,
+    UI_BUTTON_DURATION_5,
+    UI_BUTTON_DURATION_10,
+    UI_BUTTON_DURATION_30,
+    UI_BUTTON_DURATION_60
 } UI_Button;
 
 typedef enum
@@ -139,7 +144,8 @@ typedef enum
     UI_MODE_FILE_ACTIONS,
     UI_MODE_WAV_INFO,
     UI_MODE_FILE_DELETE_CONFIRM,
-    UI_MODE_FILE_RENAME
+    UI_MODE_FILE_RENAME,
+    UI_MODE_RECORD_DURATION
 } UI_Mode;
 
 typedef struct
@@ -164,6 +170,7 @@ typedef struct
     uint32_t last_recorder_draw_ms;
     uint32_t browser_row;
     uint32_t browser_pending_row;
+    uint32_t requested_recording_seconds;
 
     uint32_t first_bin;
     uint32_t visible_bins;
@@ -186,6 +193,7 @@ static UI_State ui;
 static void ui_draw_controls(void);
 static void ui_draw_status(void);
 static void ui_draw_recorder_body(void);
+static void ui_draw_record_duration_body(void);
 static void ui_draw_file_browser_body(void);
 static void ui_draw_file_actions_body(void);
 static void ui_draw_wav_info_body(void);
@@ -255,6 +263,7 @@ void UI_Init(void)
     ui.last_recorder_draw_ms = HAL_GetTick();
     ui.browser_row = 0U;
     ui.browser_pending_row = 0U;
+    ui.requested_recording_seconds = 5U;
 
     ui.first_bin = UI_FIRST_USABLE_BIN;
     ui.visible_bins = ui_full_visible_bins();
@@ -293,6 +302,13 @@ void UI_DrawSpectrum(void)
 {
     if (!ui.initialized)
     {
+        return;
+    }
+
+    if (ui.mode == UI_MODE_RECORD_DURATION)
+    {
+        ui_draw_record_duration_body();
+        ui.graph_dirty = false;
         return;
     }
 
@@ -511,6 +527,25 @@ void UI_SetRecorderStatus(
 bool UI_IsRecorderScreen(void)
 {
     return ui.mode == UI_MODE_RECORDER;
+}
+
+void UI_ShowRecordDurationSelector(void)
+{
+    ui.mode = UI_MODE_RECORD_DURATION;
+    ui.running = false;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsRecordDurationSelectorScreen(void)
+{
+    return ui.mode == UI_MODE_RECORD_DURATION;
+}
+
+uint32_t UI_GetRequestedRecordingSeconds(void)
+{
+    return ui.requested_recording_seconds;
 }
 
 void UI_ShowRecorder(void)
@@ -809,6 +844,23 @@ static void ui_draw_controls(void)
 {
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
 
+    if (ui.mode == UI_MODE_RECORD_DURATION)
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(192, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
+        Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
+        Display_DrawString(78, 12, "5 SEC", COLOR_BLACK, COLOR_CYAN);
+        Display_DrawString(138, 12, "10 SEC", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(202, 12, "30 SEC", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(266, 12, "60 SEC", COLOR_BLACK, COLOR_MAGENTA);
+        return;
+    }
+
     if (ui.mode == UI_MODE_FILE_RENAME)
     {
         Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
@@ -935,7 +987,7 @@ static void ui_draw_controls(void)
         ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
 
         Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
-        Display_DrawString(86, 12, "REC5", COLOR_BLACK, COLOR_GREEN);
+        Display_DrawString(72, 12, "RECORD", COLOR_BLACK, COLOR_GREEN);
         Display_DrawString(150, 12, "STOP", COLOR_BLACK, COLOR_RED);
         Display_DrawString(214, 12, "WAVE", COLOR_BLACK, COLOR_CYAN);
         Display_DrawString(278, 12, "FFT", COLOR_BLACK, COLOR_MAGENTA);
@@ -1020,6 +1072,32 @@ static void ui_draw_uint(
                        &buffer[index],
                        color,
                        COLOR_BLACK);
+}
+
+static void ui_draw_record_duration_body(void)
+{
+    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_CYAN);
+
+    Display_DrawString(50, 46, "SELECT RECORDING DURATION",
+                       COLOR_WHITE, COLOR_BLACK);
+
+    Display_DrawString(28, 82, "5 SEC", COLOR_CYAN, COLOR_BLACK);
+    Display_DrawString(138, 82, "480044 BYTES", COLOR_GRAY, COLOR_BLACK);
+
+    Display_DrawString(28, 112, "10 SEC", COLOR_GREEN, COLOR_BLACK);
+    Display_DrawString(138, 112, "960044 BYTES", COLOR_GRAY, COLOR_BLACK);
+
+    Display_DrawString(28, 142, "30 SEC", COLOR_YELLOW, COLOR_BLACK);
+    Display_DrawString(126, 142, "2880044 BYTES", COLOR_GRAY, COLOR_BLACK);
+
+    Display_DrawString(28, 172, "60 SEC", COLOR_MAGENTA, COLOR_BLACK);
+    Display_DrawString(126, 172, "5760044 BYTES", COLOR_GRAY, COLOR_BLACK);
+
+    Display_DrawString(42, 202, "TOUCH A PRESET TO START",
+                       COLOR_WHITE, COLOR_BLACK);
 }
 
 static void ui_draw_recorder_body(void)
@@ -1500,6 +1578,19 @@ static void ui_draw_status(void)
 {
     uint32_t first_bin = ui.first_bin;
 
+    if (ui.mode == UI_MODE_RECORD_DURATION)
+    {
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_CYAN);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+                           "RECORD DURATION", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(144, UI_STATUS_TOP + 8,
+                           "5 / 10 / 30 / 60 SEC", COLOR_YELLOW, COLOR_BLACK);
+        return;
+    }
+
     if (ui.mode == UI_MODE_FILE_RENAME)
     {
         Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
@@ -1713,6 +1804,15 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
         return UI_BUTTON_NONE;
     }
 
+    if (ui.mode == UI_MODE_RECORD_DURATION)
+    {
+        if (x < 64U) return UI_BUTTON_DURATION_BACK;
+        if (x < 128U) return UI_BUTTON_DURATION_5;
+        if (x < 192U) return UI_BUTTON_DURATION_10;
+        if (x < 256U) return UI_BUTTON_DURATION_30;
+        return UI_BUTTON_DURATION_60;
+    }
+
     if (ui.mode == UI_MODE_FILE_RENAME)
     {
         if (x < 64U) return UI_BUTTON_RENAME_BACK;
@@ -1888,8 +1988,41 @@ static void ui_execute_button(UI_Button button)
             break;
 
         case UI_BUTTON_RECORD_5:
-            ui.pending_action = UI_ACTION_RECORD_5;
+            UI_ShowRecordDurationSelector();
+            UART_SendString("UI RECORD DURATION SCREEN\r\n");
+            break;
+
+        case UI_BUTTON_DURATION_BACK:
+            UI_ShowRecorder();
+            UART_SendString("UI RECORD DURATION BACK\r\n");
+            break;
+
+        case UI_BUTTON_DURATION_5:
+            ui.requested_recording_seconds = 5U;
+            ui.pending_action = UI_ACTION_RECORD_DURATION;
+            UI_ShowRecorder();
             UART_SendString("UI RECORD 5 REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_DURATION_10:
+            ui.requested_recording_seconds = 10U;
+            ui.pending_action = UI_ACTION_RECORD_DURATION;
+            UI_ShowRecorder();
+            UART_SendString("UI RECORD 10 REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_DURATION_30:
+            ui.requested_recording_seconds = 30U;
+            ui.pending_action = UI_ACTION_RECORD_DURATION;
+            UI_ShowRecorder();
+            UART_SendString("UI RECORD 30 REQUEST\r\n");
+            break;
+
+        case UI_BUTTON_DURATION_60:
+            ui.requested_recording_seconds = 60U;
+            ui.pending_action = UI_ACTION_RECORD_DURATION;
+            UI_ShowRecorder();
+            UART_SendString("UI RECORD 60 REQUEST\r\n");
             break;
 
         case UI_BUTTON_RECORD_STOP:

@@ -102,6 +102,8 @@ static void GenerateAdcTone1500Hz(
 static void Console_RunRecTone5(void);
 static void Console_RunRec5(void);
 static void Console_RunRec10(void);
+static void Console_RunRec30(void);
+static void Console_RunRec60(void);
 static void Console_RunRecStart(void);
 static void Console_RunRecStop(void);
 static void Console_RunRecStatus(void);
@@ -139,6 +141,9 @@ static uint32_t analyzer_last_display_ms;
 /* UI_RECORDER_CONTROLLER_PATCH */
 /* NUMBERED_RECORDINGS_PATCH */
 /* CONSOLE_REC10_PATCH */
+/* CONSOLE_REC30_PATCH */
+/* CONSOLE_REC60_PATCH */
+/* UI_RECORD_DURATION_SELECTOR_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
@@ -514,6 +519,20 @@ else if (strcmp(command, "sdread0") == 0)
         if (Analyzer_RequireStopped())
         {
             Console_RunRec10();
+        }
+    }
+    else if (strcmp(command, "rec30") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRec30();
+        }
+    }
+    else if (strcmp(command, "rec60") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunRec60();
         }
     }
     else if (strcmp(command, "recstart") == 0)
@@ -1035,6 +1054,8 @@ static void Console_PrintHelp(void)
         "rectone5    - Create five-second 1500 Hz test WAV\r\n"
     "rec5        - Record five seconds to CAPTURE.WAV\r\n"
     "rec10       - Record ten seconds to numbered WAV\r\n"
+    "rec30       - Record thirty seconds to numbered WAV\r\n"
+    "rec60       - Record sixty seconds to numbered WAV\r\n"
         "recstart    - Start WAV recorder\r\n"
         "recstop     - Stop and finalize WAV recorder\r\n"
         "recstatus   - Show WAV recorder status\r\n"
@@ -1926,6 +1947,116 @@ static void Console_RunRecTone5(void)
 }
 
 /* REC5_CONSOLE_INTEGRATION */
+static void Console_RunRec60(void)
+{
+    RecorderStatus status;
+    FRESULT result;
+    uint64_t target_samples_64;
+    uint32_t target_samples;
+
+    target_samples_64 =
+        (uint64_t)Capture_GetSampleRate() * 60U;
+
+    if (target_samples_64 > UINT32_MAX)
+    {
+        UART_SendString("Sixty-second target is too large\r\n");
+        return;
+    }
+
+    target_samples = (uint32_t)target_samples_64;
+
+    UART_SendString("Starting sixty-second WAV recording\r\n");
+    UART_SendString("Target Samples = ");
+    UART_SendDec(target_samples);
+    UART_SendString("\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Recorder is already active\r\n");
+        return;
+    }
+
+    Recorder_GetStatus(&status);
+    if (status.state != RECORDER_STATE_IDLE)
+    {
+        UART_SendString("Recorder is not idle\r\n");
+        return;
+    }
+
+    result = RecordingCatalog_StartNext();
+    if (result != FR_OK)
+    {
+        UART_SendString("Recorder file open failed, FatFs = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    if (!Capture_StartRecorder(60U))
+    {
+        UART_SendString("Sixty-second DMA start failed\r\n");
+        (void)Recorder_StopRaw();
+        return;
+    }
+
+    UART_SendString("Sixty-second recording started\r\n");
+}
+
+static void Console_RunRec30(void)
+{
+    RecorderStatus status;
+    FRESULT result;
+    uint64_t target_samples_64;
+    uint32_t target_samples;
+
+    target_samples_64 =
+        (uint64_t)Capture_GetSampleRate() * 30U;
+
+    if (target_samples_64 > UINT32_MAX)
+    {
+        UART_SendString("Thirty-second target is too large\r\n");
+        return;
+    }
+
+    target_samples = (uint32_t)target_samples_64;
+
+    UART_SendString("Starting thirty-second WAV recording\r\n");
+    UART_SendString("Target Samples = ");
+    UART_SendDec(target_samples);
+    UART_SendString("\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Recorder is already active\r\n");
+        return;
+    }
+
+    Recorder_GetStatus(&status);
+    if (status.state != RECORDER_STATE_IDLE)
+    {
+        UART_SendString("Recorder is not idle\r\n");
+        return;
+    }
+
+    result = RecordingCatalog_StartNext();
+    if (result != FR_OK)
+    {
+        UART_SendString("Recorder file open failed, FatFs = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        return;
+    }
+
+    if (!Capture_StartRecorder(30U))
+    {
+        UART_SendString("Thirty-second DMA start failed\r\n");
+        (void)Recorder_StopRaw();
+        return;
+    }
+
+    UART_SendString("Thirty-second recording started\r\n");
+}
+
 static void Console_RunRec10(void)
 {
     RecorderStatus status;
@@ -3809,6 +3940,61 @@ static void UI_ProcessRecorderActions(void)
 
     switch (action)
     {
+        case UI_ACTION_RECORD_DURATION:
+        {
+            uint32_t duration_seconds =
+                UI_GetRequestedRecordingSeconds();
+
+            if ((duration_seconds != 5U) &&
+                (duration_seconds != 10U) &&
+                (duration_seconds != 30U) &&
+                (duration_seconds != 60U))
+            {
+                UART_SendString("UI invalid recording duration\r\n");
+                break;
+            }
+
+            if (!Analyzer_RequireStopped())
+            {
+                UART_SendString("UI timed recording blocked by analyzer\r\n");
+                break;
+            }
+
+            if (Capture_IsRecorderActive())
+            {
+                UART_SendString("UI recorder is already active\r\n");
+                break;
+            }
+
+            Recorder_GetStatus(&status);
+            if (status.state != RECORDER_STATE_IDLE)
+            {
+                UART_SendString("UI recorder is not idle\r\n");
+                break;
+            }
+
+            result = RecordingCatalog_StartNext();
+            if (result != FR_OK)
+            {
+                UART_SendString("UI recorder file open failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+                break;
+            }
+
+            if (!Capture_StartRecorder(duration_seconds))
+            {
+                UART_SendString("UI timed recorder DMA start failed\r\n");
+                (void)Recorder_StopRaw();
+                break;
+            }
+
+            UART_SendString("UI timed recording started: ");
+            UART_SendDec(duration_seconds);
+            UART_SendString(" seconds\r\n");
+            break;
+        }
+
         case UI_ACTION_RECORD_5:
             if (!Analyzer_RequireStopped())
             {
