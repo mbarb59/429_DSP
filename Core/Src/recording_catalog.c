@@ -30,6 +30,83 @@ static void build_filename(uint32_t number, char *filename)
     filename[11] = '\0';
 }
 
+static bool recording_duration_is_valid(
+    uint32_t duration_seconds)
+{
+    return (duration_seconds == 5U) ||
+           (duration_seconds == 10U) ||
+           (duration_seconds == 30U) ||
+           (duration_seconds == 60U);
+}
+
+FRESULT RecordingCatalog_CheckSpace(
+    uint32_t duration_seconds,
+    uint32_t sample_rate_hz,
+    RecordingSpaceCheck *check)
+{
+    uint32_t total_kib = 0U;
+    uint32_t free_kib = 0U;
+    uint64_t bits_per_second;
+    uint64_t data_bytes;
+    uint64_t wav_bytes;
+    uint64_t wav_kib;
+    uint64_t required_kib;
+    FRESULT result;
+
+    if (check == NULL)
+    {
+        return FR_INVALID_PARAMETER;
+    }
+
+    memset(check, 0, sizeof(*check));
+    check->duration_seconds = duration_seconds;
+    check->sample_rate_hz = sample_rate_hz;
+    check->reserve_kib = RECORDING_SPACE_RESERVE_KIB;
+    check->filesystem_result = FR_OK;
+    check->sufficient = false;
+
+    if (!recording_duration_is_valid(duration_seconds) ||
+        (sample_rate_hz == 0U))
+    {
+        check->filesystem_result = FR_INVALID_PARAMETER;
+        return FR_INVALID_PARAMETER;
+    }
+
+    bits_per_second =
+        (uint64_t)sample_rate_hz *
+        RECORDING_CHANNEL_COUNT *
+        RECORDING_BITS_PER_SAMPLE;
+
+    data_bytes =
+        (bits_per_second / 8U) * duration_seconds;
+    wav_bytes =
+        (uint64_t)RECORDING_WAV_HEADER_BYTES + data_bytes;
+    wav_kib = (wav_bytes + 1023U) / 1024U;
+    required_kib = wav_kib + RECORDING_SPACE_RESERVE_KIB;
+
+    if ((wav_kib > UINT32_MAX) ||
+        (required_kib > UINT32_MAX))
+    {
+        check->filesystem_result = FR_INVALID_PARAMETER;
+        return FR_INVALID_PARAMETER;
+    }
+
+    check->wav_kib = (uint32_t)wav_kib;
+    check->required_kib = (uint32_t)required_kib;
+
+    result = FileSystem_GetSpace(&total_kib, &free_kib);
+    check->filesystem_result = result;
+
+    if (result != FR_OK)
+    {
+        return result;
+    }
+
+    check->available_kib = free_kib;
+    check->sufficient = free_kib >= check->required_kib;
+    return FR_OK;
+}
+
 void RecordingCatalog_Init(void)
 {
     strcpy(selected_filename, "CAPTURE.WAV");

@@ -144,6 +144,7 @@ static uint32_t analyzer_last_display_ms;
 /* CONSOLE_REC30_PATCH */
 /* CONSOLE_REC60_PATCH */
 /* UI_RECORD_DURATION_SELECTOR_PATCH */
+/* RECORDING_SPACE_CHECK_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
@@ -3971,6 +3972,55 @@ static void UI_ProcessRecorderActions(void)
             {
                 UART_SendString("UI recorder is not idle\r\n");
                 break;
+            }
+
+            {
+                RecordingSpaceCheck space_check;
+
+                result = RecordingCatalog_CheckSpace(
+                    duration_seconds,
+                    Capture_GetSampleRate(),
+                    &space_check);
+
+                UART_SendString("UI SD SPACE CHECK\r\n");
+
+                if (result != FR_OK)
+                {
+                    UART_SendString("Space FatFs    = ");
+                    UART_SendDec((uint32_t)result);
+                    UART_SendString("\r\n");
+                    UART_SendString(
+                        "UI recording blocked: SD space check failed\r\n");
+                    break;
+                }
+
+                UART_SendString("Duration Sec   = ");
+                UART_SendDec(space_check.duration_seconds);
+                UART_SendString("\r\n");
+                UART_SendString("WAV KiB        = ");
+                UART_SendDec(space_check.wav_kib);
+                UART_SendString("\r\n");
+                UART_SendString("Reserve KiB    = ");
+                UART_SendDec(space_check.reserve_kib);
+                UART_SendString("\r\n");
+                UART_SendString("Required KiB   = ");
+                UART_SendDec(space_check.required_kib);
+                UART_SendString("\r\n");
+                UART_SendString("Available KiB  = ");
+                UART_SendDec(space_check.available_kib);
+                UART_SendString("\r\n");
+                UART_SendString("Space Result   = ");
+                UART_SendString(
+                    space_check.sufficient ?
+                    "PASS\r\n" :
+                    "FAIL\r\n");
+
+                if (!space_check.sufficient)
+                {
+                    UART_SendString(
+                        "UI recording blocked: SD space low\r\n");
+                    break;
+                }
             }
 
             result = RecordingCatalog_StartNext();

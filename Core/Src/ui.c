@@ -79,7 +79,6 @@
 #define UI_BROWSER_ROW_HEIGHT      27U
 
 /* UI_WAV_RENAME_PATCH */
-/* UI_RECORDING_PROGRESS_PATCH */
 #define UI_RENAME_BUTTON_X          188U
 #define UI_RENAME_BUTTON_Y          132U
 #define UI_RENAME_BUTTON_WIDTH      120U
@@ -1106,39 +1105,6 @@ static void ui_draw_recorder_body(void)
     const char *state_text = "UNKNOWN";
     uint32_t elapsed_ms =
         ui.recorder_status.captured_samples / 48U;
-    uint32_t target_seconds = ui.requested_recording_seconds;
-    uint32_t target_samples;
-    uint32_t remaining_ms;
-    uint32_t progress_percent;
-    uint32_t progress_width;
-
-    if ((target_seconds != 5U) &&
-        (target_seconds != 10U) &&
-        (target_seconds != 30U) &&
-        (target_seconds != 60U))
-    {
-        target_seconds = 5U;
-    }
-
-    target_samples = target_seconds * 48000U;
-
-    if (ui.recorder_status.captured_samples >= target_samples)
-    {
-        remaining_ms = 0U;
-        progress_percent = 100U;
-    }
-    else
-    {
-        uint32_t remaining_samples =
-            target_samples - ui.recorder_status.captured_samples;
-
-        remaining_ms = remaining_samples / 48U;
-        progress_percent = (uint32_t)(
-            ((uint64_t)ui.recorder_status.captured_samples * 100U) /
-            target_samples);
-    }
-
-    progress_width = (progress_percent * 112U) / 100U;
 
     switch (ui.recorder_status.recorder_state)
     {
@@ -1201,38 +1167,29 @@ static void ui_draw_recorder_body(void)
                  ui.recorder_status.write_errors,
                  COLOR_YELLOW);
 
-    Display_DrawString(188, 62, "MIC RMS",
-                   COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(188, 62,
+                       ui.recorder_status.capture_active ?
+                       "CAPTURE ON" : "CAPTURE OFF",
+                       ui.recorder_status.capture_active ?
+                       COLOR_RED : COLOR_GREEN,
+                       COLOR_BLACK);
 
-    ui_draw_uint(248, 62,
-             ui.recorder_status.rms_counts,
-             COLOR_YELLOW);
+    Display_DrawString(188, 82, "SELECTED WAV", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(188, 102, "RMS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(230, 102,
+                 ui.recorder_status.rms_counts,
+                 COLOR_YELLOW);
 
-    Display_DrawString(292, 62,
-                   ui.recorder_status.clipping ? "!" : "OK",
-                   ui.recorder_status.clipping ?
-                   COLOR_RED : COLOR_GREEN,
-                   COLOR_BLACK);
+    Display_DrawString(188, 122, "CLIP", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(230, 122,
+                       ui.recorder_status.clipping ? "YES" : "NO",
+                       ui.recorder_status.clipping ? COLOR_RED : COLOR_GREEN,
+                       COLOR_BLACK);
 
-
-    Display_DrawString(188, 82, "TARGET", COLOR_WHITE, COLOR_BLACK);
-    ui_draw_uint(246, 82, target_seconds, COLOR_CYAN);
-    Display_DrawString(278, 82, "SEC", COLOR_GRAY, COLOR_BLACK);
-
-    Display_DrawString(188, 102, "REMAIN", COLOR_WHITE, COLOR_BLACK);
-    ui_draw_uint(246, 102, remaining_ms, COLOR_YELLOW);
-    Display_DrawString(292, 102, "MS", COLOR_GRAY, COLOR_BLACK);
-
-    Display_DrawString(188, 122, "PROGRESS", COLOR_WHITE, COLOR_BLACK);
-    ui_draw_uint(260, 122, progress_percent, COLOR_GREEN);
-    Display_DrawString(292, 122, "%", COLOR_GRAY, COLOR_BLACK);
-
-    Display_DrawRect(188, 142, 116, 12, COLOR_WHITE);
-    Display_FillRect(190, 144, 112, 8, COLOR_DARK_GRAY);
-    if (progress_width != 0U)
-    {
-        Display_FillRect(190, 144, progress_width, 8, COLOR_GREEN);
-    }
+    Display_DrawString(188, 142, "CLIP CNT", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(248, 142,
+                 ui.recorder_status.clip_count,
+                 ui.recorder_status.clipping ? COLOR_RED : COLOR_YELLOW);
 
 
     Display_FillRect(UI_FILES_X, UI_FILES_Y,

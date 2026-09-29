@@ -9,14 +9,36 @@
 #define RECORDING_FILENAME_CAPACITY 13U
 #define RECORDING_BROWSER_PAGE_SIZE  6U
 
+/* RECORDING_SPACE_CHECK_PATCH */
+#define RECORDING_WAV_HEADER_BYTES    44U
+#define RECORDING_CHANNEL_COUNT        1U
+#define RECORDING_BITS_PER_SAMPLE     16U
+#define RECORDING_SPACE_RESERVE_KIB   64U
+
 typedef struct
 {
     char filename[RECORDING_FILENAME_CAPACITY];
     uint32_t file_size;
 } RecordingCatalogEntry;
 
+typedef struct
+{
+    uint32_t duration_seconds;
+    uint32_t sample_rate_hz;
+    uint32_t wav_kib;
+    uint32_t reserve_kib;
+    uint32_t required_kib;
+    uint32_t available_kib;
+    FRESULT filesystem_result;
+    bool sufficient;
+} RecordingSpaceCheck;
+
 void RecordingCatalog_Init(void);
 FRESULT RecordingCatalog_StartNext(void);
+FRESULT RecordingCatalog_CheckSpace(
+    uint32_t duration_seconds,
+    uint32_t sample_rate_hz,
+    RecordingSpaceCheck *check);
 const char *RecordingCatalog_GetSelected(void);
 bool RecordingCatalog_SetSelected(const char *filename);
 
