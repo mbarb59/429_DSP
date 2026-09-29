@@ -75,10 +75,38 @@
 #define UI_FILES_WIDTH             140U
 #define UI_FILES_HEIGHT            48U
 #define UI_FILES_RELEASE_MARGIN    12U
+#define UI_PROGRESS_PERIOD_MS          1000U
+#define UI_PROGRESS_REMAIN_X           246
+#define UI_PROGRESS_REMAIN_Y           102
+#define UI_PROGRESS_REMAIN_W            46U
+#define UI_PROGRESS_REMAIN_H            14U
+#define UI_PROGRESS_PERCENT_X          260
+#define UI_PROGRESS_PERCENT_Y          122
+#define UI_PROGRESS_PERCENT_W           32U
+#define UI_PROGRESS_PERCENT_H           14U
+#define UI_PROGRESS_BAR_X              188
+#define UI_PROGRESS_BAR_Y              142
+#define UI_PROGRESS_BAR_W              116U
+#define UI_PROGRESS_BAR_H               12U
+#define UI_PROGRESS_BAR_INNER_X        190
+#define UI_PROGRESS_BAR_INNER_Y        144
+#define UI_PROGRESS_BAR_INNER_W        112U
+#define UI_PROGRESS_BAR_INNER_H          8U
+#define UI_MIC_RMS_VALUE_X              248
+#define UI_MIC_RMS_VALUE_Y               62
+#define UI_MIC_RMS_VALUE_W               40U
+#define UI_MIC_RMS_VALUE_H               16U
+#define UI_MIC_CLIP_VALUE_X              292
+#define UI_MIC_CLIP_VALUE_Y               62
+#define UI_MIC_CLIP_VALUE_W               24U
+#define UI_MIC_CLIP_VALUE_H               16U
 #define UI_BROWSER_ROW_TOP         42U
 #define UI_BROWSER_ROW_HEIGHT      27U
 
 /* UI_WAV_RENAME_PATCH */
+/* UI_LIGHTWEIGHT_PROGRESS_V2_PATCH */
+/* UI_RMS_1HZ_UPDATE_PATCH */
+/* UI_SD_SPACE_LOW_MESSAGE_PATCH */
 #define UI_RENAME_BUTTON_X          188U
 #define UI_RENAME_BUTTON_Y          132U
 #define UI_RENAME_BUTTON_WIDTH      120U
@@ -171,6 +199,15 @@ typedef struct
     uint32_t browser_row;
     uint32_t browser_pending_row;
     uint32_t requested_recording_seconds;
+    bool recorder_progress_dirty;
+    uint32_t last_progress_draw_ms;
+    uint32_t last_progress_percent;
+    uint32_t last_remaining_seconds;
+    uint32_t last_displayed_rms;
+    bool last_displayed_clipping;
+    bool recorder_space_low;
+    uint32_t recorder_required_kib;
+    uint32_t recorder_available_kib;
 
     uint32_t first_bin;
     uint32_t visible_bins;
@@ -193,6 +230,9 @@ static UI_State ui;
 static void ui_draw_controls(void);
 static void ui_draw_status(void);
 static void ui_draw_recorder_body(void);
+static void ui_draw_recording_progress_static(void);
+static void ui_draw_recording_progress_dynamic(bool force);
+static uint32_t ui_recording_target_seconds(void);
 static void ui_draw_record_duration_body(void);
 static void ui_draw_file_browser_body(void);
 static void ui_draw_file_actions_body(void);
@@ -264,6 +304,15 @@ void UI_Init(void)
     ui.browser_row = 0U;
     ui.browser_pending_row = 0U;
     ui.requested_recording_seconds = 5U;
+    ui.recorder_progress_dirty = false;
+    ui.last_progress_draw_ms = HAL_GetTick();
+    ui.last_progress_percent = 0U;
+    ui.last_remaining_seconds = 0U;
+    ui.last_displayed_rms = UINT32_MAX;
+    ui.last_displayed_clipping = false;
+    ui.recorder_space_low = false;
+    ui.recorder_required_kib = 0U;
+    ui.recorder_available_kib = 0U;
 
     ui.first_bin = UI_FIRST_USABLE_BIN;
     ui.visible_bins = ui_full_visible_bins();
@@ -517,11 +566,31 @@ void UI_SetRecorderStatus(
         return;
     }
 
-    ui.recorder_status = *status;
-
-    if (ui.mode == UI_MODE_RECORDER)
     {
-        ui.graph_dirty = true;
+        bool was_active = ui.recorder_status.capture_active;
+
+        ui.recorder_status = *status;
+
+        if (ui.mode == UI_MODE_RECORDER)
+        {
+            if (status->capture_active)
+            {
+                ui.recorder_progress_dirty = true;
+            }
+            else
+            {
+                ui.recorder_progress_dirty = false;
+                ui.graph_dirty = true;
+            }
+
+            if (!was_active && status->capture_active)
+            {
+                ui.last_progress_draw_ms = HAL_GetTick();
+                ui.last_progress_percent = 0U;
+                ui.last_remaining_seconds = ui_recording_target_seconds();
+                ui.recorder_progress_dirty = true;
+            }
+        }
     }
 }
 bool UI_IsRecorderScreen(void)
@@ -529,8 +598,28 @@ bool UI_IsRecorderScreen(void)
     return ui.mode == UI_MODE_RECORDER;
 }
 
+void UI_ShowSdSpaceLow(
+    uint32_t required_kib,
+    uint32_t available_kib)
+{
+    ui.recorder_space_low = true;
+    ui.recorder_required_kib = required_kib;
+    ui.recorder_available_kib = available_kib;
+    ui.mode = UI_MODE_RECORDER;
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+}
+
+void UI_ClearRecorderMessage(void)
+{
+    ui.recorder_space_low = false;
+    ui.recorder_required_kib = 0U;
+    ui.recorder_available_kib = 0U;
+}
+
 void UI_ShowRecordDurationSelector(void)
 {
+    UI_ClearRecorderMessage();
     ui.mode = UI_MODE_RECORD_DURATION;
     ui.running = false;
     ui.graph_dirty = true;
@@ -1100,6 +1189,171 @@ static void ui_draw_record_duration_body(void)
                        COLOR_WHITE, COLOR_BLACK);
 }
 
+static uint32_t ui_recording_target_seconds(void)
+{
+    uint32_t seconds = ui.requested_recording_seconds;
+    if ((seconds != 5U) && (seconds != 10U) &&
+        (seconds != 30U) && (seconds != 60U)) seconds = 5U;
+    return seconds;
+}
+
+static void ui_draw_recording_progress_dynamic(bool force)
+{
+    uint32_t target_seconds = ui_recording_target_seconds();
+    uint64_t target_samples = (uint64_t)target_seconds * 48000U;
+    uint32_t captured = ui.recorder_status.captured_samples;
+    uint32_t elapsed_seconds = captured / 48000U;
+    uint32_t remaining_seconds;
+    uint32_t percent;
+    uint32_t old_width;
+    uint32_t new_width;
+
+    if ((uint64_t)captured >= target_samples)
+    {
+        remaining_seconds = 0U;
+        percent = 100U;
+    }
+    else
+    {
+        remaining_seconds = target_seconds - elapsed_seconds;
+        percent = (uint32_t)(((uint64_t)captured * 100U) / target_samples);
+    }
+
+    if (force || (remaining_seconds != ui.last_remaining_seconds))
+    {
+        Display_FillRect(UI_PROGRESS_REMAIN_X, UI_PROGRESS_REMAIN_Y,
+                         UI_PROGRESS_REMAIN_W, UI_PROGRESS_REMAIN_H, COLOR_BLACK);
+        ui_draw_uint(UI_PROGRESS_REMAIN_X, UI_PROGRESS_REMAIN_Y,
+                     remaining_seconds, COLOR_YELLOW);
+        ui.last_remaining_seconds = remaining_seconds;
+    }
+
+    if (force || (percent != ui.last_progress_percent))
+    {
+        Display_FillRect(UI_PROGRESS_PERCENT_X, UI_PROGRESS_PERCENT_Y,
+                         UI_PROGRESS_PERCENT_W, UI_PROGRESS_PERCENT_H, COLOR_BLACK);
+        ui_draw_uint(UI_PROGRESS_PERCENT_X, UI_PROGRESS_PERCENT_Y,
+                     percent, COLOR_GREEN);
+        old_width = (ui.last_progress_percent * UI_PROGRESS_BAR_INNER_W) / 100U;
+        new_width = (percent * UI_PROGRESS_BAR_INNER_W) / 100U;
+        if (new_width > old_width)
+        {
+            Display_FillRect(UI_PROGRESS_BAR_INNER_X + (int32_t)old_width,
+                             UI_PROGRESS_BAR_INNER_Y, new_width - old_width,
+                             UI_PROGRESS_BAR_INNER_H, COLOR_GREEN);
+        }
+        ui.last_progress_percent = percent;
+    }
+
+    /* UI_RMS_1HZ_UPDATE_PATCH
+     * This function is gated by UI_PROGRESS_PERIOD_MS, so MIC RMS and the
+     * clip indicator update at the same one-second rate as progress.
+     */
+    if (force ||
+        (ui.recorder_status.rms_counts != ui.last_displayed_rms))
+    {
+        Display_FillRect(UI_MIC_RMS_VALUE_X,
+                         UI_MIC_RMS_VALUE_Y,
+                         UI_MIC_RMS_VALUE_W,
+                         UI_MIC_RMS_VALUE_H,
+                         COLOR_BLACK);
+        ui_draw_uint(UI_MIC_RMS_VALUE_X,
+                     UI_MIC_RMS_VALUE_Y,
+                     ui.recorder_status.rms_counts,
+                     COLOR_YELLOW);
+        ui.last_displayed_rms = ui.recorder_status.rms_counts;
+    }
+
+    if (force ||
+        (ui.recorder_status.clipping != ui.last_displayed_clipping))
+    {
+        Display_FillRect(UI_MIC_CLIP_VALUE_X,
+                         UI_MIC_CLIP_VALUE_Y,
+                         UI_MIC_CLIP_VALUE_W,
+                         UI_MIC_CLIP_VALUE_H,
+                         COLOR_BLACK);
+        Display_DrawString(UI_MIC_CLIP_VALUE_X,
+                           UI_MIC_CLIP_VALUE_Y,
+                           ui.recorder_status.clipping ? "!" : "OK",
+                           ui.recorder_status.clipping ? COLOR_RED : COLOR_GREEN,
+                           COLOR_BLACK);
+        ui.last_displayed_clipping = ui.recorder_status.clipping;
+    }
+}
+
+static void ui_draw_recording_progress_static(void)
+{
+    uint32_t target = ui_recording_target_seconds();
+    Display_DrawString(188, 82, "TARGET", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(246, 82, target, COLOR_CYAN);
+    Display_DrawString(278, 82, "SEC", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(188, 102, "REMAIN", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(292, 102, "SEC", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawString(188, 122, "PROGRESS", COLOR_WHITE, COLOR_BLACK);
+    Display_DrawString(292, 122, "%", COLOR_GRAY, COLOR_BLACK);
+    Display_DrawRect(UI_PROGRESS_BAR_X, UI_PROGRESS_BAR_Y,
+                     UI_PROGRESS_BAR_W, UI_PROGRESS_BAR_H, COLOR_WHITE);
+    Display_FillRect(UI_PROGRESS_BAR_INNER_X, UI_PROGRESS_BAR_INNER_Y,
+                     UI_PROGRESS_BAR_INNER_W, UI_PROGRESS_BAR_INNER_H,
+                     COLOR_DARK_GRAY);
+    ui.last_progress_percent = 0U;
+    ui.last_remaining_seconds = target;
+    ui_draw_recording_progress_dynamic(true);
+}
+
+void UI_ResetRecordingProgress(void)
+{
+    uint32_t target = ui_recording_target_seconds();
+
+    /* UI_LIGHTWEIGHT_PROGRESS_RESET_FIX
+     * Reset only the tiny dynamic regions before DMA capture starts.
+     */
+    Display_FillRect(UI_PROGRESS_REMAIN_X,
+                     UI_PROGRESS_REMAIN_Y,
+                     UI_PROGRESS_REMAIN_W,
+                     UI_PROGRESS_REMAIN_H,
+                     COLOR_BLACK);
+    ui_draw_uint(UI_PROGRESS_REMAIN_X,
+                 UI_PROGRESS_REMAIN_Y,
+                 target,
+                 COLOR_YELLOW);
+
+    Display_FillRect(UI_PROGRESS_PERCENT_X,
+                     UI_PROGRESS_PERCENT_Y,
+                     UI_PROGRESS_PERCENT_W,
+                     UI_PROGRESS_PERCENT_H,
+                     COLOR_BLACK);
+    ui_draw_uint(UI_PROGRESS_PERCENT_X,
+                 UI_PROGRESS_PERCENT_Y,
+                 0U,
+                 COLOR_GREEN);
+
+    Display_FillRect(UI_PROGRESS_BAR_INNER_X,
+                     UI_PROGRESS_BAR_INNER_Y,
+                     UI_PROGRESS_BAR_INNER_W,
+                     UI_PROGRESS_BAR_INNER_H,
+                     COLOR_DARK_GRAY);
+
+    ui.last_progress_percent = 0U;
+    ui.last_remaining_seconds = target;
+    ui.last_displayed_rms = UINT32_MAX;
+    ui.last_displayed_clipping = !ui.recorder_status.clipping;
+    ui.last_progress_draw_ms = HAL_GetTick();
+    ui.recorder_progress_dirty = false;
+}
+
+void UI_ProcessRecorderDisplay(void)
+{
+    uint32_t now;
+    if (!ui.initialized || (ui.mode != UI_MODE_RECORDER) ||
+        !ui.recorder_status.capture_active || !ui.recorder_progress_dirty) return;
+    now = HAL_GetTick();
+    if ((now - ui.last_progress_draw_ms) < UI_PROGRESS_PERIOD_MS) return;
+    ui.last_progress_draw_ms = now;
+    ui.recorder_progress_dirty = false;
+    ui_draw_recording_progress_dynamic(false);
+}
+
 static void ui_draw_recorder_body(void)
 {
     const char *state_text = "UNKNOWN";
@@ -1167,30 +1421,35 @@ static void ui_draw_recorder_body(void)
                  ui.recorder_status.write_errors,
                  COLOR_YELLOW);
 
-    Display_DrawString(188, 62,
-                       ui.recorder_status.capture_active ?
-                       "CAPTURE ON" : "CAPTURE OFF",
-                       ui.recorder_status.capture_active ?
-                       COLOR_RED : COLOR_GREEN,
-                       COLOR_BLACK);
-
-    Display_DrawString(188, 82, "SELECTED WAV", COLOR_WHITE, COLOR_BLACK);
-    Display_DrawString(188, 102, "RMS", COLOR_WHITE, COLOR_BLACK);
-    ui_draw_uint(230, 102,
+    /* UI_PROGRESS_FIELD_OVERLAP_FIX
+     * Keep MIC RMS on its own row. The legacy SELECTED WAV, RMS, CLIP,
+     * and CLIP CNT rows overlapped TARGET, REMAIN, PROGRESS, and the bar.
+     */
+    Display_DrawString(188, 62, "MIC RMS", COLOR_WHITE, COLOR_BLACK);
+    ui_draw_uint(248, 62,
                  ui.recorder_status.rms_counts,
                  COLOR_YELLOW);
-
-    Display_DrawString(188, 122, "CLIP", COLOR_WHITE, COLOR_BLACK);
-    Display_DrawString(230, 122,
-                       ui.recorder_status.clipping ? "YES" : "NO",
+    Display_DrawString(292, 62,
+                       ui.recorder_status.clipping ? "!" : "OK",
                        ui.recorder_status.clipping ? COLOR_RED : COLOR_GREEN,
                        COLOR_BLACK);
 
-    Display_DrawString(188, 142, "CLIP CNT", COLOR_WHITE, COLOR_BLACK);
-    ui_draw_uint(248, 142,
-                 ui.recorder_status.clip_count,
-                 ui.recorder_status.clipping ? COLOR_RED : COLOR_YELLOW);
+    ui_draw_recording_progress_static();
 
+    if (ui.recorder_space_low &&
+        !ui.recorder_status.capture_active)
+    {
+        Display_FillRect(176, 58, 136, 100, COLOR_BLACK);
+        Display_DrawRect(176, 58, 136, 100, COLOR_RED);
+        Display_DrawString(188, 68, "SD SPACE LOW", COLOR_RED, COLOR_BLACK);
+        Display_DrawString(184, 94, "REQUIRED", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(250, 94, ui.recorder_required_kib, COLOR_YELLOW);
+        Display_DrawString(292, 94, "K", COLOR_GRAY, COLOR_BLACK);
+        Display_DrawString(184, 118, "AVAILABLE", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(250, 118, ui.recorder_available_kib, COLOR_YELLOW);
+        Display_DrawString(292, 118, "K", COLOR_GRAY, COLOR_BLACK);
+        Display_DrawString(188, 142, "DELETE FILES", COLOR_WHITE, COLOR_BLACK);
+    }
 
     Display_FillRect(UI_FILES_X, UI_FILES_Y,
                      UI_FILES_WIDTH, UI_FILES_HEIGHT, COLOR_BLUE);

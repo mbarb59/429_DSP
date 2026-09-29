@@ -63,6 +63,10 @@ void UI_Init(void);
 void UI_Draw(void);
 void UI_DrawSpectrum(void);
 void UI_ProcessTouch(void);
+
+/* UI_LIGHTWEIGHT_PROGRESS_V2_PATCH */
+void UI_ProcessRecorderDisplay(void);
+void UI_ResetRecordingProgress(void);
 void UI_NotifySpectrumChanged(void);
 
 UI_Action UI_GetPendingAction(void);
@@ -74,6 +78,12 @@ bool UI_IsRecorderScreen(void);
 void UI_ShowRecordDurationSelector(void);
 bool UI_IsRecordDurationSelectorScreen(void);
 uint32_t UI_GetRequestedRecordingSeconds(void);
+
+/* UI_SD_SPACE_LOW_MESSAGE_PATCH */
+void UI_ShowSdSpaceLow(
+    uint32_t required_kib,
+    uint32_t available_kib);
+void UI_ClearRecorderMessage(void);
 void UI_ShowRecorder(void);
 void UI_ShowWaveform(void);
 bool UI_IsWaveformScreen(void);

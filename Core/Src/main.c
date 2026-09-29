@@ -144,7 +144,10 @@ static uint32_t analyzer_last_display_ms;
 /* CONSOLE_REC30_PATCH */
 /* CONSOLE_REC60_PATCH */
 /* UI_RECORD_DURATION_SELECTOR_PATCH */
+/* UI_LIGHTWEIGHT_PROGRESS_V2_PATCH */
+/* UI_LIGHTWEIGHT_PROGRESS_RESET_FIX */
 /* RECORDING_SPACE_CHECK_PATCH */
+/* UI_SD_SPACE_LOW_MESSAGE_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
@@ -293,7 +296,13 @@ UART_SendString("LTDC INIT...\r\n");
 
     UI_UpdateRecorderStatus();
 
-    /* Service recording again after possible display work. */
+    /* Service audio immediately before the tiny progress update. */
+    Capture_ProcessRecorder();
+    Recorder_Process();
+
+    UI_ProcessRecorderDisplay();
+
+    /* Service audio again immediately after display work. */
     Capture_ProcessRecorder();
     Recorder_Process();
 
@@ -4017,6 +4026,9 @@ static void UI_ProcessRecorderActions(void)
 
                 if (!space_check.sufficient)
                 {
+                    UI_ShowSdSpaceLow(
+                        space_check.required_kib,
+                        space_check.available_kib);
                     UART_SendString(
                         "UI recording blocked: SD space low\r\n");
                     break;
@@ -4031,6 +4043,8 @@ static void UI_ProcessRecorderActions(void)
                 UART_SendString("\r\n");
                 break;
             }
+
+            UI_ResetRecordingProgress();
 
             if (!Capture_StartRecorder(duration_seconds))
             {
