@@ -25,6 +25,10 @@
 #define FFT_ADC_MAX            4095U
 #define FFT_DEFAULT_RATE_HZ    48000U
 
+/* RECORDED_FFT_DB_DISPLAY_V1_PATCH */
+#define FFT_DB_REFERENCE_COUNTS  2048.0f
+#define FFT_DB_FLOOR_TENTHS      (-900)
+
 #if CAPTURE_SAMPLE_COUNT_MAX < FFT_SIZE_MAX
 #error "CAPTURE_SAMPLE_COUNT_MAX must be at least FFT_SIZE_MAX."
 #endif
@@ -32,6 +36,7 @@
 static float fft_real[FFT_SIZE_MAX];
 static float fft_imag[FFT_SIZE_MAX];
 static float magnitudes[FFT_BIN_COUNT_MAX];
+static int16_t db_tenths[FFT_BIN_COUNT_MAX];
 static int32_t centered_samples[FFT_SIZE_MAX];
 static int32_t windowed_samples[FFT_SIZE_MAX];
 
@@ -42,6 +47,7 @@ static uint32_t fft_dc_counts;
 static uint32_t fft_rms_counts;
 static uint32_t peak_bin;
 static uint32_t peak_frequency_hz;
+static int16_t peak_db_tenths = FFT_DB_FLOOR_TENTHS;
 static bool fft_valid;
 
 static uint32_t fft_log2_size(uint32_t fft_size)
@@ -174,6 +180,30 @@ static void prepare_samples(void)
         (uint32_t)sqrt(square_sum / (double)active_fft_size);
 }
 
+static int16_t magnitude_to_db_tenths(float magnitude)
+{
+    float db;
+
+    if (magnitude <= 0.0f)
+    {
+        return FFT_DB_FLOOR_TENTHS;
+    }
+
+    db = 20.0f * log10f(magnitude / FFT_DB_REFERENCE_COUNTS);
+
+    if (db > 0.0f)
+    {
+        db = 0.0f;
+    }
+    else if (db < -90.0f)
+    {
+        db = -90.0f;
+    }
+
+    return (int16_t)((db * 10.0f) +
+                     ((db >= 0.0f) ? 0.5f : -0.5f));
+}
+
 static void calculate_magnitudes(void)
 {
     float largest = 0.0f;
@@ -189,6 +219,7 @@ static void calculate_magnitudes(void)
         /* Approximate single-sided amplitude correction for the Hann window. */
         magnitude *= (4.0f / (float)active_fft_size);
         magnitudes[bin] = magnitude;
+        db_tenths[bin] = magnitude_to_db_tenths(magnitude);
 
         /* Ignore DC when locating the spectral peak. */
         if ((bin > 0U) && (magnitude > largest))
@@ -202,6 +233,7 @@ static void calculate_magnitudes(void)
         (uint32_t)(((uint64_t)peak_bin * fft_sample_rate_hz +
                     (active_fft_size / 2U)) /
                    active_fft_size);
+    peak_db_tenths = db_tenths[peak_bin];
 }
 
 bool FFT_IsValidSize(uint32_t fft_size)
@@ -316,6 +348,7 @@ void FFT_Invalidate(void)
     fft_valid = false;
     peak_bin = 0U;
     peak_frequency_hz = 0U;
+    peak_db_tenths = FFT_DB_FLOOR_TENTHS;
 }
 
 uint32_t FFT_GetPeakBin(void)
@@ -362,6 +395,21 @@ uint32_t FFT_GetMagnitude(uint32_t bin)
     }
 
     return (uint32_t)(magnitudes[bin] + 0.5f);
+}
+
+int16_t FFT_GetDbTenths(uint32_t bin)
+{
+    if (bin >= active_bin_count)
+    {
+        return FFT_DB_FLOOR_TENTHS;
+    }
+
+    return db_tenths[bin];
+}
+
+int16_t FFT_GetPeakDbTenths(void)
+{
+    return peak_db_tenths;
 }
 
 int32_t FFT_GetCenteredSample(uint32_t index)

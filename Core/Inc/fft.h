@@ -38,6 +38,10 @@ uint32_t FFT_GetDC(void);
 uint32_t FFT_GetRMS(void);
 uint32_t FFT_GetMagnitude(uint32_t bin);
 
+/* RECORDED_FFT_DB_DISPLAY_V1_PATCH */
+int16_t FFT_GetDbTenths(uint32_t bin);
+int16_t FFT_GetPeakDbTenths(void);
+
 int32_t FFT_GetCenteredSample(uint32_t index);
 int32_t FFT_GetWindowedSample(uint32_t index);
 
