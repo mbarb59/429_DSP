@@ -58,6 +58,8 @@ static void Analyzer_Process(void);
 static void FillRgbBars(volatile uint16_t *framebuffer);
 static void Console_Poll(void);
 static void Console_ProcessCommand(char *command);
+static void Console_RunFftExport(void);
+static void Console_RunFftScan(void);
 static void Console_PrintPrompt(void);
 static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
@@ -150,6 +152,11 @@ static uint32_t analyzer_last_display_ms;
 /* UI_SD_SPACE_LOW_MESSAGE_PATCH */
 /* UI_WAVE_VIEWER_PATCH */
 /* UI_RECORDED_FFT_PATCH */
+/* FFTEXPORT_CSV_PATCH */
+/* FFT_EVENT_SCAN_MARKERS_PATCH */
+/* CSV_SAFETY_GUARDS_MAIN_PATCH */
+/* TFT_FFT_SCAN_EXPORT_PATCH */
+/* RECORDED_FFT_TIMELINE_SCRUBBER_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
 /* UI_FILE_ACTION_SCREEN_PATCH */
 /* UI_DEFAULT_WAV_SELECTION_PATCH */
@@ -348,6 +355,416 @@ static void Console_Poll(void)
             UART_SendChar(character);
         }
     }
+}
+
+#define FFTEXPORT_TEXT_CAPACITY  160U
+
+static uint32_t FftExport_AppendText(char *buffer,
+                                     uint32_t capacity,
+                                     uint32_t position,
+                                     const char *value)
+{
+    if ((buffer == NULL) || (value == NULL) || (capacity == 0U))
+    {
+        return position;
+    }
+
+    while ((*value != '\0') && ((position + 1U) < capacity))
+    {
+        buffer[position++] = *value++;
+    }
+
+    buffer[position] = '\0';
+    return position;
+}
+
+static uint32_t FftExport_AppendUint(char *buffer,
+                                     uint32_t capacity,
+                                     uint32_t position,
+                                     uint32_t value)
+{
+    char reverse[10];
+    uint32_t count = 0U;
+
+    do
+    {
+        reverse[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+    while ((value != 0U) && (count < sizeof(reverse)));
+
+    while ((count != 0U) && ((position + 1U) < capacity))
+    {
+        buffer[position++] = reverse[--count];
+    }
+
+    buffer[position] = '\0';
+    return position;
+}
+
+static uint32_t FftExport_AppendInt(char *buffer,
+                                    uint32_t capacity,
+                                    uint32_t position,
+                                    int32_t value)
+{
+    uint32_t magnitude;
+
+    if (value < 0)
+    {
+        position = FftExport_AppendText(buffer,
+                                        capacity,
+                                        position,
+                                        "-");
+        magnitude = (uint32_t)(-(value + 1)) + 1U;
+    }
+    else
+    {
+        magnitude = (uint32_t)value;
+    }
+
+    return FftExport_AppendUint(buffer,
+                                capacity,
+                                position,
+                                magnitude);
+}
+
+static bool FftExport_Write(FIL *file,
+                            const char *text,
+                            FRESULT *result)
+{
+    UINT bytes_written = 0U;
+    UINT length = 0U;
+
+    if ((file == NULL) || (text == NULL) || (result == NULL))
+    {
+        return false;
+    }
+
+    while (text[length] != '\0')
+    {
+        length++;
+    }
+
+    *result = f_write(file, text, length, &bytes_written);
+    return (*result == FR_OK) && (bytes_written == length);
+}
+
+static bool FftExport_WriteKeyUint(FIL *file,
+                                   const char *key,
+                                   uint32_t value,
+                                   FRESULT *result)
+{
+    char line[FFTEXPORT_TEXT_CAPACITY];
+    uint32_t position = 0U;
+
+    line[0] = '\0';
+    position = FftExport_AppendText(line, sizeof(line), position, key);
+    position = FftExport_AppendText(line, sizeof(line), position, ",");
+    position = FftExport_AppendUint(line, sizeof(line), position, value);
+    (void)FftExport_AppendText(line, sizeof(line), position, "\r\n");
+
+    return FftExport_Write(file, line, result);
+}
+
+static bool FftExport_WriteKeyInt(FIL *file,
+                                  const char *key,
+                                  int32_t value,
+                                  FRESULT *result)
+{
+    char line[FFTEXPORT_TEXT_CAPACITY];
+    uint32_t position = 0U;
+
+    line[0] = '\0';
+    position = FftExport_AppendText(line, sizeof(line), position, key);
+    position = FftExport_AppendText(line, sizeof(line), position, ",");
+    position = FftExport_AppendInt(line, sizeof(line), position, value);
+    (void)FftExport_AppendText(line, sizeof(line), position, "\r\n");
+
+    return FftExport_Write(file, line, result);
+}
+
+static bool FftExport_MakeFilename(const char *wav_name,
+                                   char *csv_name,
+                                   uint32_t capacity)
+{
+    uint32_t position = 0U;
+
+    if ((wav_name == NULL) || (wav_name[0] == '\0') ||
+        (csv_name == NULL) || (capacity < 5U))
+    {
+        return false;
+    }
+
+    while ((wav_name[position] != '\0') &&
+           (wav_name[position] != '.') &&
+           ((position + 5U) < capacity))
+    {
+        csv_name[position] = wav_name[position];
+        position++;
+    }
+
+    if ((position == 0U) || ((position + 5U) > capacity))
+    {
+        return false;
+    }
+
+    csv_name[position++] = '.';
+    csv_name[position++] = 'C';
+    csv_name[position++] = 'S';
+    csv_name[position++] = 'V';
+    csv_name[position] = '\0';
+    return true;
+}
+
+static void Console_RunFftScan(void)
+{
+    const WavFftViewerInfo *info = WavFftViewer_GetInfo();
+    FRESULT result;
+
+    UART_SendString("FFT Event Scan\r\n");
+    UART_SendString("--------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("FFT scan blocked: recorder active\r\n");
+        return;
+    }
+
+    if ((info == NULL) || !info->active)
+    {
+        UART_SendString(
+            "FFT scan blocked: open a recorded WAV FFT first\r\n");
+        return;
+    }
+
+    UART_SendString("Source File    = ");
+    UART_SendString(RecordingCatalog_GetSelected());
+    UART_SendString("\r\nSegments       = ");
+    UART_SendDec(info->segment_count);
+    UART_SendString("\r\nScan Step      = ");
+    UART_SendDec(WAV_FFT_SCAN_STEP_SEGMENTS);
+    UART_SendString("\r\nScanning...\r\n");
+
+    result = WavFftViewer_ScanEvents();
+
+    UART_SendString("Events Found   = ");
+    UART_SendDec(WavFftViewer_GetEventCount());
+    UART_SendString("\r\n");
+
+    if (result == FR_OK)
+    {
+        for (uint32_t index = 0U;
+             index < WavFftViewer_GetEventCount();
+             index++)
+        {
+            const WavFftPeakEvent *event = WavFftViewer_GetEvent(index);
+            if (event == NULL)
+            {
+                continue;
+            }
+
+            UART_SendString("Event ");
+            UART_SendDec(index + 1U);
+            UART_SendString(": SEG=");
+            UART_SendDec(event->segment_index + 1U);
+            UART_SendString(" TIME_MS=");
+            UART_SendDec(event->time_ms);
+            UART_SendString(" PEAK_HZ=");
+            UART_SendDec(event->peak_frequency_hz);
+            UART_SendString(" DB_X10=");
+            if (event->peak_db_tenths < 0)
+            {
+                UART_SendChar('-');
+                UART_SendDec((uint32_t)(-event->peak_db_tenths));
+            }
+            else
+            {
+                UART_SendDec((uint32_t)event->peak_db_tenths);
+            }
+            UART_SendString("\r\n");
+        }
+
+        UI_ShowRecordedFft();
+    }
+
+    UART_SendString("Scan Result    = ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString((result == FR_OK) ? "  PASS\r\n" : "  FAIL\r\n");
+}
+
+static void Console_RunFftExport(void)
+{
+    const WavFftViewerInfo *info = WavFftViewer_GetInfo();
+    const char *source_name = RecordingCatalog_GetSelected();
+    FIL file;
+    FRESULT result = FR_OK;
+    char output_name[13];
+    char line[FFTEXPORT_TEXT_CAPACITY];
+    uint32_t bin_count;
+    uint32_t bin_width_millihz;
+    uint32_t bins_written = 0U;
+    bool file_open = false;
+    bool success = false;
+
+    UART_SendString("FFT CSV Export\r\n");
+    UART_SendString("--------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("FFT export blocked: recorder active\r\n");
+        return;
+    }
+
+    if ((info == NULL) || !info->active || !FFT_IsValid())
+    {
+        UART_SendString(
+            "FFT export blocked: open a recorded WAV FFT first\r\n");
+        return;
+    }
+
+    if (!FftExport_MakeFilename(source_name,
+                                output_name,
+                                sizeof(output_name)))
+    {
+        UART_SendString("FFT export blocked: invalid WAV filename\r\n");
+        return;
+    }
+
+    result = f_open(&file, output_name, FA_CREATE_ALWAYS | FA_WRITE);
+    if (result != FR_OK)
+    {
+        UART_SendString("FFT export open failed, FatFs = ");
+        UART_SendDec((uint32_t)result);
+        UART_SendString("\r\n");
+        return;
+    }
+    file_open = true;
+
+    success = FftExport_Write(&file,
+                              "429_DSP FFT EXPORT\r\n",
+                              &result);
+
+    if (success)
+    {
+        uint32_t position = 0U;
+        line[0] = '\0';
+        position = FftExport_AppendText(line, sizeof(line), position,
+                                        "Source File,");
+        position = FftExport_AppendText(line, sizeof(line), position,
+                                        source_name);
+        (void)FftExport_AppendText(line, sizeof(line), position, "\r\n");
+        success = FftExport_Write(&file, line, &result);
+    }
+
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Segment", info->segment_index + 1U, &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Segment Count", info->segment_count, &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Segment Time ms", info->segment_time_ms, &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Sample Rate Hz", info->sample_rate, &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "FFT Size", FFT_GetSize(), &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Bin Width mHz", FFT_GetBinWidthMilliHz(), &result);
+    if (success) success = FftExport_WriteKeyUint(
+        &file, "Peak Frequency Hz", FFT_GetPeakFrequency(), &result);
+    if (success) success = FftExport_WriteKeyInt(
+        &file, "Peak Level dBFS x10", FFT_GetPeakDbTenths(), &result);
+    if (success) success = FftExport_Write(
+        &file,
+        "\r\nBin,Frequency mHz,Magnitude Counts,Level dBFS x10\r\n",
+        &result);
+
+    bin_count = FFT_GetBinCount();
+    bin_width_millihz = FFT_GetBinWidthMilliHz();
+
+    for (uint32_t bin = 1U; success && (bin < bin_count); bin++)
+    {
+        uint32_t position = 0U;
+        uint32_t frequency_millihz =
+            (uint32_t)((uint64_t)bin * bin_width_millihz);
+
+        line[0] = '\0';
+        position = FftExport_AppendUint(line, sizeof(line), position, bin);
+        position = FftExport_AppendText(line, sizeof(line), position, ",");
+        position = FftExport_AppendUint(line, sizeof(line), position,
+                                        frequency_millihz);
+        position = FftExport_AppendText(line, sizeof(line), position, ",");
+        position = FftExport_AppendUint(line, sizeof(line), position,
+                                        FFT_GetMagnitude(bin));
+        position = FftExport_AppendText(line, sizeof(line), position, ",");
+        position = FftExport_AppendInt(line, sizeof(line), position,
+                                       FFT_GetDbTenths(bin));
+        (void)FftExport_AppendText(line, sizeof(line), position, "\r\n");
+
+        success = FftExport_Write(&file, line, &result);
+        if (success)
+        {
+            bins_written++;
+        }
+    }
+
+    if (success)
+    {
+        result = f_sync(&file);
+        success = (result == FR_OK);
+    }
+
+    if (file_open)
+    {
+        FRESULT close_result = f_close(&file);
+        file_open = false;
+        if (success && (close_result != FR_OK))
+        {
+            result = close_result;
+            success = false;
+        }
+    }
+
+    if (!success)
+    {
+        (void)f_unlink(output_name);
+    }
+
+    UART_SendString("Source File    = ");
+    UART_SendString(source_name);
+    UART_SendString("\r\n");
+    UART_SendString("Output File    = ");
+    UART_SendString(output_name);
+    UART_SendString("\r\n");
+    UART_SendString("Segment        = ");
+    UART_SendDec(info->segment_index + 1U);
+    UART_SendString(" / ");
+    UART_SendDec(info->segment_count);
+    UART_SendString("\r\n");
+    UART_SendString("Time ms        = ");
+    UART_SendDec(info->segment_time_ms);
+    UART_SendString("\r\n");
+    UART_SendString("FFT Size       = ");
+    UART_SendDec(FFT_GetSize());
+    UART_SendString("\r\n");
+    UART_SendString("Bins Written   = ");
+    UART_SendDec(bins_written);
+    UART_SendString("\r\n");
+    UART_SendString("Peak Hz        = ");
+    UART_SendDec(FFT_GetPeakFrequency());
+    UART_SendString("\r\n");
+    UART_SendString("Peak dB x10    = ");
+    if (FFT_GetPeakDbTenths() < 0)
+    {
+        UART_SendChar('-');
+        UART_SendDec((uint32_t)(-FFT_GetPeakDbTenths()));
+    }
+    else
+    {
+        UART_SendDec((uint32_t)FFT_GetPeakDbTenths());
+    }
+    UART_SendString("\r\n");
+    UART_SendString("Export Result  = ");
+    UART_SendDec((uint32_t)result);
+    UART_SendString(success ? "  PASS\r\n" : "  FAIL\r\n");
 }
 
 static void Console_ProcessCommand(char *command)
@@ -559,6 +976,14 @@ else if (strcmp(command, "sdread0") == 0)
     else if (strcmp(command, "recstatus") == 0)
     {
         Console_RunRecStatus();
+    }
+    else if (strcmp(command, "fftexport") == 0)
+    {
+        Console_RunFftExport();
+    }
+    else if (strcmp(command, "fftscan") == 0)
+    {
+        Console_RunFftScan();
     }
     else if (strcmp(command, "sdunmount") == 0)
     {
@@ -4121,6 +4546,13 @@ static void UI_ProcessRecorderActions(void)
             break;
 
         case UI_ACTION_VIEW_WAVEFORM:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString(
+                    "WAVE blocked: select a WAV file\r\n");
+                break;
+            }
+
             if (Capture_IsRecorderActive())
             {
                 UART_SendString("Stop recording before waveform view\r\n");
@@ -4149,6 +4581,13 @@ static void UI_ProcessRecorderActions(void)
             break;
 
         case UI_ACTION_VIEW_SPECTRUM:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString(
+                    "FFT blocked: select a WAV file\r\n");
+                break;
+            }
+
             if (Capture_IsRecorderActive())
             {
                 UART_SendString("Stop recording before FFT view\r\n");
@@ -4200,6 +4639,39 @@ static void UI_ProcessRecorderActions(void)
             }
             break;
 
+        case UI_ACTION_FFT_SCAN:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString("FFT scan blocked: select a WAV file\r\n");
+                break;
+            }
+            Console_RunFftScan();
+            break;
+
+        case UI_ACTION_FFT_EXPORT:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString("FFT export blocked: select a WAV file\r\n");
+                break;
+            }
+            Console_RunFftExport();
+            break;
+
+        case UI_ACTION_FFT_LOAD_SEGMENT:
+            result = WavFftViewer_LoadSegment(
+                UI_GetRequestedFftSegment());
+            if (result == FR_OK)
+            {
+                UI_ShowRecordedFft();
+            }
+            else
+            {
+                UART_SendString("UI recorded FFT timeline failed, FatFs = ");
+                UART_SendDec((uint32_t)result);
+                UART_SendString("\r\n");
+            }
+            break;
+
         case UI_ACTION_FFT_BACK:
             WavFftViewer_End();
             UART_SendString("UI recorded FFT closed\r\n");
@@ -4225,13 +4697,13 @@ static void UI_ProcessRecorderActions(void)
                 /* UI_DEFAULT_WAV_SELECTION_PATCH */
                 if (RecordingCatalog_EnsureSelectedValid())
                 {
-                    UART_SendString("UI selected WAV: ");
+                    UART_SendString("UI selected file: ");
                     UART_SendString(RecordingCatalog_GetSelected());
                     UART_SendString("\r\n");
                 }
                 else
                 {
-                    UART_SendString("UI file browser has no WAV files\r\n");
+                    UART_SendString("UI file browser has no WAV or CSV files\r\n");
                 }
 
                 UI_ShowFileBrowser();
@@ -4294,7 +4766,7 @@ static void UI_ProcessRecorderActions(void)
             if (RecordingCatalog_SelectPageEntry(
                     UI_GetBrowserPendingRow()))
             {
-                UART_SendString("UI selected WAV: ");
+                UART_SendString("UI selected file: ");
                 UART_SendString(RecordingCatalog_GetSelected());
                 UART_SendString("\r\n");
                 UI_RefreshFileBrowser();
@@ -4322,11 +4794,11 @@ static void UI_ProcessRecorderActions(void)
             if (!RecordingCatalog_SelectPageEntry(
                     UI_GetBrowserPendingRow()))
             {
-                UART_SendString("Select a valid WAV before OPEN\r\n");
+                UART_SendString("Select a valid file before OPEN\r\n");
                 break;
             }
 
-            UART_SendString("UI selected WAV: ");
+            UART_SendString("UI selected file: ");
             UART_SendString(RecordingCatalog_GetSelected());
             UART_SendString("\r\n");
             UI_ShowFileActions();
@@ -4341,6 +4813,15 @@ static void UI_ProcessRecorderActions(void)
         case UI_ACTION_FILE_INFO:
         {
             UI_WavInfo info;
+
+            if (RecordingCatalog_SelectedIsCsv())
+            {
+                UART_SendString("UI FFT CSV info: ");
+                UART_SendString(RecordingCatalog_GetSelected());
+                UART_SendString("\r\n");
+                UI_ShowFileActions();
+                break;
+            }
 
             result = UI_LoadSelectedWavInfo(&info);
             if (result == FR_OK)
@@ -4360,6 +4841,13 @@ static void UI_ProcessRecorderActions(void)
         }
 
         case UI_ACTION_FILE_RENAME_OPEN:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString(
+                    "Rename blocked: select a WAV file\r\n");
+                break;
+            }
+
             if (Capture_IsRecorderActive())
             {
                 UART_SendString("Stop recording before rename\r\n");
@@ -4431,7 +4919,7 @@ static void UI_ProcessRecorderActions(void)
             {
                 UI_ReturnToFileBrowser();
                 UI_RefreshFileBrowser();
-                UART_SendString("UI selected WAV: ");
+                UART_SendString("UI selected file: ");
                 UART_SendString(RecordingCatalog_GetSelected());
                 UART_SendString("\r\n");
             }
@@ -4461,7 +4949,7 @@ static void UI_ProcessRecorderActions(void)
 
             if (!RecordingCatalog_EnsureSelectedValid())
             {
-                UART_SendString("Select a valid WAV before delete\r\n");
+                UART_SendString("Select a valid file before delete\r\n");
                 break;
             }
 
@@ -4522,13 +5010,13 @@ static void UI_ProcessRecorderActions(void)
             {
                 if (RecordingCatalog_EnsureSelectedValid())
                 {
-                    UART_SendString("UI selected WAV: ");
+                    UART_SendString("UI selected file: ");
                     UART_SendString(RecordingCatalog_GetSelected());
                     UART_SendString("\r\n");
                 }
                 else
                 {
-                    UART_SendString("UI file browser has no WAV files\r\n");
+                    UART_SendString("UI file browser has no WAV or CSV files\r\n");
                 }
                 UI_ReturnToFileBrowser();
                 UI_RefreshFileBrowser();

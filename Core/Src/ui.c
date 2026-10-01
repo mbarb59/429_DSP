@@ -38,6 +38,26 @@
 #define UI_GRAPH_BOTTOM            215
 #define UI_GRAPH_WIDTH             DISPLAY_WIDTH
 #define UI_GRAPH_HEIGHT            (UI_GRAPH_BOTTOM - UI_GRAPH_TOP + 1)
+#define UI_FFT_TIMELINE_X                 20
+#define UI_FFT_TIMELINE_Y                218
+#define UI_FFT_TIMELINE_WIDTH            280U
+#define UI_FFT_TIMELINE_HEIGHT            20U
+#define UI_FFT_TIMELINE_LINE_Y           228
+#define UI_FFT_TIMELINE_TOUCH_MARGIN       4U
+#define UI_FFT_TIMELINE_AUTO_HIDE_MS      3000U
+
+/* FFT_TIMELINE_SEPARATOR_PATCH */
+#define UI_FFT_TIMELINE_SEPARATOR_Y     (UI_FFT_TIMELINE_Y - 2)
+
+/* RECORDED_FFT_TIMELINE_GEOMETRY_FIX */
+/* FFT_COLLAPSIBLE_TIMELINE_READINGS_PATCH */
+/* FFT_TIMELINE_UI_CLEANUP_PATCH */
+/* FFT_DISPLAY_CSV_BROWSER_COMBINED_PATCH */
+/* RECORDED_FFT_RECLAIM_BOTTOM_PATCH */
+/* FFT_EVENT_SCAN_MARKERS_PATCH */
+/* TFT_FFT_SCAN_EXPORT_PATCH */
+#define UI_RECORDED_FFT_GRAPH_BOTTOM     (UI_FFT_TIMELINE_SEPARATOR_Y - 1)
+#define UI_RECORDED_FFT_GRAPH_HEIGHT     (UI_RECORDED_FFT_GRAPH_BOTTOM - UI_GRAPH_TOP + 1)
 
 #define UI_STATUS_TOP              216
 #define UI_STATUS_HEIGHT           24
@@ -104,6 +124,11 @@
 #define UI_BROWSER_ROW_HEIGHT      27U
 
 /* UI_WAV_RENAME_PATCH */
+/* RECORDED_FFT_DB_DISPLAY_V1_PATCH */
+/* FFT_PEAK_FREQUENCY_UNITS_PATCH */
+/* FFT_PEAK_UNITS_NO_STDIO_FIX */
+/* RECORDED_FFT_TIMELINE_SCRUBBER_PATCH */
+/* FFT_TIMELINE_SEPARATOR_PATCH */
 /* UI_LIGHTWEIGHT_PROGRESS_V2_PATCH */
 /* UI_RMS_1HZ_UPDATE_PATCH */
 /* UI_SD_SPACE_LOW_MESSAGE_PATCH */
@@ -134,8 +159,8 @@ typedef enum
     UI_BUTTON_FFT_BACK,
     UI_BUTTON_FFT_PREVIOUS,
     UI_BUTTON_FFT_NEXT,
-    UI_BUTTON_FFT_FULL,
-    UI_BUTTON_FFT_PEAK,
+    UI_BUTTON_FFT_SCAN,
+    UI_BUTTON_FFT_EXPORT,
     UI_BUTTON_BROWSER_BACK,
     UI_BUTTON_BROWSER_PREVIOUS,
     UI_BUTTON_BROWSER_NEXT,
@@ -212,6 +237,11 @@ typedef struct
     uint32_t first_bin;
     uint32_t visible_bins;
     uint32_t magnitude_max;
+    bool fft_timeline_dragging;
+    bool fft_timeline_visible;
+    uint32_t fft_timeline_preview_segment;
+    uint32_t requested_fft_segment;
+    uint32_t fft_timeline_last_interaction_ms;
 
     uint16_t touch_start_x;
     uint16_t touch_start_y;
@@ -247,7 +277,28 @@ static void ui_draw_uint(
     int32_t y,
     uint32_t value,
     uint16_t color);
+static void ui_format_peak_frequency(uint32_t frequency_hz,
+                                     char *buffer,
+                                     uint32_t buffer_size);
 static void ui_draw_grid(void);
+static void ui_draw_db_grid(void);
+static void ui_draw_db_spectrum_trace(void);
+static void ui_draw_db_peak_marker(void);
+static void ui_draw_fft_timeline(void);
+static void ui_draw_fft_readings(void);
+static int32_t ui_recorded_fft_graph_bottom(void);
+static uint32_t ui_recorded_fft_graph_height(void);
+static void ui_format_time_seconds(uint32_t time_ms,
+                                   char *buffer,
+                                   uint32_t buffer_size);
+static void ui_format_dbfs_tenths(int16_t value, char *buffer, uint32_t size);
+static bool ui_fft_timeline_contains(uint16_t x, uint16_t y);
+static uint32_t ui_fft_timeline_segment_from_x(uint16_t x);
+static int32_t ui_db_tenths_to_y(int16_t db_tenths);
+static void ui_draw_signed_db(int32_t x,
+                              int32_t y,
+                              int16_t db_tenths,
+                              uint16_t color);
 static void ui_draw_spectrum_trace(void);
 static void ui_draw_peak_marker(void);
 static void ui_draw_button(int32_t x, uint16_t fill_color, uint16_t border_color);
@@ -317,6 +368,11 @@ void UI_Init(void)
     ui.first_bin = UI_FIRST_USABLE_BIN;
     ui.visible_bins = ui_full_visible_bins();
     ui.magnitude_max = UI_DEFAULT_MAGNITUDE_MAX;
+    ui.fft_timeline_dragging = false;
+    ui.fft_timeline_visible = false;
+    ui.fft_timeline_preview_segment = 0U;
+    ui.requested_fft_segment = 0U;
+    ui.fft_timeline_last_interaction_ms = 0U;
 
     ui.touch_start_x = 0U;
     ui.touch_start_y = 0U;
@@ -410,18 +466,37 @@ void UI_DrawSpectrum(void)
         return;
     }
 
-    Display_FillRect(UI_GRAPH_LEFT,
-                     UI_GRAPH_TOP,
-                     UI_GRAPH_WIDTH,
-                     UI_GRAPH_HEIGHT,
-                     COLOR_BLACK);
-
-    ui_draw_grid();
-
-    if (FFT_IsValid())
+    if (ui.mode == UI_MODE_RECORDED_FFT)
     {
-        ui_draw_spectrum_trace();
-        ui_draw_peak_marker();
+        Display_FillRect(UI_GRAPH_LEFT,
+                         UI_GRAPH_TOP,
+                         UI_GRAPH_WIDTH,
+                         ui_recorded_fft_graph_height(),
+                         COLOR_BLACK);
+        ui_draw_db_grid();
+
+        if (FFT_IsValid())
+        {
+            ui_draw_db_spectrum_trace();
+            ui_draw_db_peak_marker();
+            ui_draw_fft_readings();
+            ui_draw_fft_timeline();
+        }
+    }
+    else
+    {
+        Display_FillRect(UI_GRAPH_LEFT,
+                         UI_GRAPH_TOP,
+                         UI_GRAPH_WIDTH,
+                         UI_GRAPH_HEIGHT,
+                         COLOR_BLACK);
+        ui_draw_grid();
+
+        if (FFT_IsValid())
+        {
+            ui_draw_spectrum_trace();
+            ui_draw_peak_marker();
+        }
     }
 
     ui.graph_dirty = false;
@@ -499,6 +574,18 @@ void UI_ProcessTouch(void)
         }
     }
 
+
+    if ((ui.mode == UI_MODE_RECORDED_FFT) &&
+        ui.fft_timeline_visible &&
+        !ui.touch_active &&
+        !ui.fft_timeline_dragging &&
+        ((now - ui.fft_timeline_last_interaction_ms) >=
+         UI_FFT_TIMELINE_AUTO_HIDE_MS))
+    {
+        ui.fft_timeline_visible = false;
+        ui.graph_dirty = true;
+    }
+
     if (ui.controls_dirty)
     {
         ui_draw_controls();
@@ -523,6 +610,11 @@ UI_Action UI_GetPendingAction(void)
     UI_Action action = ui.pending_action;
     ui.pending_action = UI_ACTION_NONE;
     return action;
+}
+
+uint32_t UI_GetRequestedFftSegment(void)
+{
+    return ui.requested_fft_segment;
 }
 
 void UI_SetRecorderStatus(
@@ -666,6 +758,11 @@ void UI_ShowRecordedFft(void)
 
     ui.mode = UI_MODE_RECORDED_FFT;
     ui.running = false;
+    ui.fft_timeline_dragging = false;
+    ui.fft_timeline_preview_segment =
+        WavFftViewer_GetInfo()->segment_index;
+    ui.requested_fft_segment =
+        ui.fft_timeline_preview_segment;
     ui_apply_full_span();
 
     for (uint32_t bin = 1U; bin < FFT_GetBinCount(); bin++)
@@ -1042,8 +1139,8 @@ static void ui_draw_controls(void)
         Display_DrawString(22, 12, "BACK", COLOR_BLACK, COLOR_BLUE);
         Display_DrawString(80, 12, "PREV", COLOR_BLACK, COLOR_CYAN);
         Display_DrawString(144, 12, "NEXT", COLOR_BLACK, COLOR_GREEN);
-        Display_DrawString(208, 12, "FULL", COLOR_BLACK, COLOR_YELLOW);
-        Display_DrawString(278, 12, "PEAK", COLOR_BLACK, COLOR_MAGENTA);
+        Display_DrawString(208, 12, "SCAN", COLOR_BLACK, COLOR_YELLOW);
+        Display_DrawString(266, 12, "EXPORT", COLOR_BLACK, COLOR_MAGENTA);
         return;
     }
 
@@ -1135,6 +1232,132 @@ static void ui_draw_button(int32_t x,
                      UI_BUTTON_WIDTH,
                      UI_CONTROL_HEIGHT,
                      border_color);
+}
+
+static uint32_t ui_append_uint_text(char *buffer,
+                                    uint32_t buffer_size,
+                                    uint32_t position,
+                                    uint32_t value,
+                                    uint32_t minimum_digits)
+{
+    char reverse[10];
+    uint32_t count = 0U;
+
+    do
+    {
+        reverse[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+    while ((value != 0U) && (count < sizeof(reverse)));
+
+    while ((count < minimum_digits) &&
+           (count < sizeof(reverse)))
+    {
+        reverse[count++] = '0';
+    }
+
+    while ((count != 0U) &&
+           ((position + 1U) < buffer_size))
+    {
+        buffer[position++] = reverse[--count];
+    }
+
+    buffer[position] = '\0';
+    return position;
+}
+
+static uint32_t ui_append_text(char *buffer,
+                               uint32_t buffer_size,
+                               uint32_t position,
+                               const char *text)
+{
+    while ((*text != '\0') &&
+           ((position + 1U) < buffer_size))
+    {
+        buffer[position++] = *text++;
+    }
+
+    buffer[position] = '\0';
+    return position;
+}
+
+static void ui_format_peak_frequency(uint32_t frequency_hz,
+                                     char *buffer,
+                                     uint32_t buffer_size)
+{
+    uint32_t position = 0U;
+
+    if ((buffer == NULL) || (buffer_size == 0U))
+    {
+        return;
+    }
+
+    buffer[0] = '\0';
+
+    if (frequency_hz < 1000U)
+    {
+        position = ui_append_uint_text(buffer,
+                                       buffer_size,
+                                       position,
+                                       frequency_hz,
+                                       1U);
+        (void)ui_append_text(buffer,
+                            buffer_size,
+                            position,
+                            " Hz");
+    }
+    else if (frequency_hz < 10000U)
+    {
+        uint32_t rounded_hundredths =
+            (frequency_hz + 5U) / 10U;
+        uint32_t whole_khz = rounded_hundredths / 100U;
+        uint32_t fraction = rounded_hundredths % 100U;
+
+        position = ui_append_uint_text(buffer,
+                                       buffer_size,
+                                       position,
+                                       whole_khz,
+                                       1U);
+        position = ui_append_text(buffer,
+                                  buffer_size,
+                                  position,
+                                  ".");
+        position = ui_append_uint_text(buffer,
+                                       buffer_size,
+                                       position,
+                                       fraction,
+                                       2U);
+        (void)ui_append_text(buffer,
+                            buffer_size,
+                            position,
+                            " kHz");
+    }
+    else
+    {
+        uint32_t rounded_tenths =
+            (frequency_hz + 50U) / 100U;
+        uint32_t whole_khz = rounded_tenths / 10U;
+        uint32_t fraction = rounded_tenths % 10U;
+
+        position = ui_append_uint_text(buffer,
+                                       buffer_size,
+                                       position,
+                                       whole_khz,
+                                       1U);
+        position = ui_append_text(buffer,
+                                  buffer_size,
+                                  position,
+                                  ".");
+        position = ui_append_uint_text(buffer,
+                                       buffer_size,
+                                       position,
+                                       fraction,
+                                       1U);
+        (void)ui_append_text(buffer,
+                            buffer_size,
+                            position,
+                            " kHz");
+    }
 }
 
 static void ui_draw_uint(
@@ -1605,43 +1828,19 @@ static void ui_draw_rename_editor_body(void)
 
 static void ui_draw_file_actions_body(void)
 {
-    const char *selected = RecordingCatalog_GetSelected();
-    FILINFO information;
-    FRESULT result;
-
-    Display_FillRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
-                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_BLACK);
-    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
-                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
-    Display_DrawString(10, 44, "SELECTED WAV", COLOR_CYAN, COLOR_BLACK);
-    Display_DrawString(10, 68, selected, COLOR_GREEN, COLOR_BLACK);
-
-    result = f_stat(selected, &information);
-    if (result == FR_OK)
-    {
-        Display_DrawString(10, 96, "SIZE", COLOR_WHITE, COLOR_BLACK);
-        ui_draw_uint(58, 96, (uint32_t)information.fsize, COLOR_YELLOW);
-        Display_DrawString(140, 96, "BYTES", COLOR_GRAY, COLOR_BLACK);
-    }
-    else
-    {
-        Display_DrawString(10, 96, "FILE NOT FOUND", COLOR_RED, COLOR_BLACK);
-    }
-
-    Display_DrawString(10, 128, "WAVE", COLOR_CYAN, COLOR_BLACK);
-    Display_DrawString(10, 150, "FFT", COLOR_GREEN, COLOR_BLACK);
-    Display_DrawString(10, 172, "INFO", COLOR_YELLOW, COLOR_BLACK);
-    Display_DrawString(10, 194, "DELETE", COLOR_RED, COLOR_BLACK);
-    Display_DrawString(66, 194, "CONFIRM", COLOR_GRAY, COLOR_BLACK);
-
-    Display_FillRect(UI_RENAME_BUTTON_X, UI_RENAME_BUTTON_Y,
-                     UI_RENAME_BUTTON_WIDTH, UI_RENAME_BUTTON_HEIGHT,
-                     COLOR_MAGENTA);
-    Display_DrawRect(UI_RENAME_BUTTON_X, UI_RENAME_BUTTON_Y,
-                     UI_RENAME_BUTTON_WIDTH, UI_RENAME_BUTTON_HEIGHT,
-                     COLOR_WHITE);
-    Display_DrawString(220, 151, "RENAME", COLOR_BLACK, COLOR_MAGENTA);
-    Display_DrawString(202, 171, "EDIT WAV NAME", COLOR_BLACK, COLOR_MAGENTA);
+    const char *selected=RecordingCatalog_GetSelected();
+    bool csv=RecordingCatalog_SelectedIsCsv();
+    FILINFO fi; FRESULT r;
+    Display_FillRect(UI_GRAPH_LEFT,UI_GRAPH_TOP,UI_GRAPH_WIDTH,UI_GRAPH_HEIGHT,COLOR_BLACK);
+    Display_DrawRect(UI_GRAPH_LEFT,UI_GRAPH_TOP,UI_GRAPH_WIDTH,UI_GRAPH_HEIGHT,COLOR_GRAY);
+    Display_DrawString(10,44,csv?"SELECTED FFT EXPORT":"SELECTED WAV",COLOR_CYAN,COLOR_BLACK);
+    Display_DrawString(10,68,selected,COLOR_GREEN,COLOR_BLACK);
+    r=f_stat(selected,&fi);
+    if(r==FR_OK){ Display_DrawString(10,96,"SIZE",COLOR_WHITE,COLOR_BLACK); ui_draw_uint(58,96,(uint32_t)fi.fsize,COLOR_YELLOW); Display_DrawString(140,96,"BYTES",COLOR_GRAY,COLOR_BLACK); }
+    else Display_DrawString(10,96,"FILE NOT FOUND",COLOR_RED,COLOR_BLACK);
+    if(csv){ Display_DrawString(10,128,"FFT CSV EXPORT",COLOR_CYAN,COLOR_BLACK); Display_DrawString(10,150,"INFO: FILE AND SIZE",COLOR_YELLOW,COLOR_BLACK); Display_DrawString(10,194,"DELETE",COLOR_RED,COLOR_BLACK); Display_DrawString(66,194,"CONFIRM",COLOR_GRAY,COLOR_BLACK); Display_DrawString(202,151,"WAV ACTIONS",COLOR_DARK_GRAY,COLOR_BLACK); Display_DrawString(202,171,"DISABLED",COLOR_DARK_GRAY,COLOR_BLACK); return; }
+    Display_DrawString(10,128,"WAVE",COLOR_CYAN,COLOR_BLACK); Display_DrawString(10,150,"FFT",COLOR_GREEN,COLOR_BLACK); Display_DrawString(10,172,"INFO",COLOR_YELLOW,COLOR_BLACK); Display_DrawString(10,194,"DELETE",COLOR_RED,COLOR_BLACK); Display_DrawString(66,194,"CONFIRM",COLOR_GRAY,COLOR_BLACK);
+    Display_FillRect(UI_RENAME_BUTTON_X,UI_RENAME_BUTTON_Y,UI_RENAME_BUTTON_WIDTH,UI_RENAME_BUTTON_HEIGHT,COLOR_MAGENTA); Display_DrawRect(UI_RENAME_BUTTON_X,UI_RENAME_BUTTON_Y,UI_RENAME_BUTTON_WIDTH,UI_RENAME_BUTTON_HEIGHT,COLOR_WHITE); Display_DrawString(220,151,"RENAME",COLOR_BLACK,COLOR_MAGENTA); Display_DrawString(202,171,"EDIT WAV NAME",COLOR_BLACK,COLOR_MAGENTA);
 }
 
 static void ui_draw_file_browser_body(void)
@@ -1673,6 +1872,10 @@ static void ui_draw_file_browser_body(void)
         {
             Display_DrawString(12, y + 9, entry->filename,
                                COLOR_WHITE, background);
+            Display_DrawString(118, y + 9,
+                entry->file_type == RECORDING_FILE_TYPE_CSV ? "FFT" : "WAV",
+                entry->file_type == RECORDING_FILE_TYPE_CSV ? COLOR_CYAN : COLOR_GREEN,
+                background);
             ui_draw_uint(160, y + 9, entry->file_size, COLOR_YELLOW);
             Display_DrawString(240, y + 9, "BYTES",
                                COLOR_GRAY, background);
@@ -1750,6 +1953,374 @@ static void ui_draw_waveform_body(void)
         Display_DrawLine((int32_t)x, y_min,
                          (int32_t)x, y_max, COLOR_GREEN);
     }
+}
+
+static int32_t ui_recorded_fft_graph_bottom(void)
+{
+    return ui.fft_timeline_visible ?
+        UI_RECORDED_FFT_GRAPH_BOTTOM :
+        ((int32_t)DISPLAY_HEIGHT - 1);
+}
+
+static uint32_t ui_recorded_fft_graph_height(void)
+{
+    return (uint32_t)(ui_recorded_fft_graph_bottom() -
+                      UI_GRAPH_TOP + 1);
+}
+
+static int32_t ui_db_tenths_to_y(int16_t db_tenths)
+{
+    int32_t value = db_tenths;
+    uint32_t usable_height =
+        ui_recorded_fft_graph_height() - 2U;
+
+    if (value > 0)
+    {
+        value = 0;
+    }
+    else if (value < -900)
+    {
+        value = -900;
+    }
+
+    return UI_GRAPH_TOP + 1 +
+           (int32_t)(((-value) * usable_height) / 900);
+}
+
+static void ui_draw_signed_db(int32_t x,
+                              int32_t y,
+                              int16_t db_tenths,
+                              uint16_t color)
+{
+    int32_t whole_db = db_tenths / 10;
+
+    if (whole_db < 0)
+    {
+        Display_DrawString(x, y, "-", color, COLOR_BLACK);
+        ui_draw_uint(x + 8, y, (uint32_t)(-whole_db), color);
+    }
+    else
+    {
+        ui_draw_uint(x, y, (uint32_t)whole_db, color);
+    }
+}
+
+static void ui_format_time_seconds(uint32_t time_ms,
+                                   char *buffer,
+                                   uint32_t buffer_size)
+{
+    uint32_t position = 0U;
+    uint32_t rounded_hundredths;
+    uint32_t whole_seconds;
+    uint32_t fraction;
+
+    if ((buffer == NULL) || (buffer_size == 0U))
+    {
+        return;
+    }
+
+    buffer[0] = '\0';
+    rounded_hundredths = (time_ms + 5U) / 10U;
+    whole_seconds = rounded_hundredths / 100U;
+    fraction = rounded_hundredths % 100U;
+
+    position = ui_append_uint_text(buffer,
+                                   buffer_size,
+                                   position,
+                                   whole_seconds,
+                                   1U);
+    position = ui_append_text(buffer,
+                              buffer_size,
+                              position,
+                              ".");
+    position = ui_append_uint_text(buffer,
+                                   buffer_size,
+                                   position,
+                                   fraction,
+                                   2U);
+    (void)ui_append_text(buffer,
+                        buffer_size,
+                        position,
+                        " s");
+}
+
+static void ui_format_dbfs_tenths(int16_t value, char *buffer, uint32_t size)
+{
+    uint32_t p=0U, mag;
+    if(buffer==NULL||size==0U) return;
+    buffer[0]='\0';
+    if(value<0){ p=ui_append_text(buffer,size,p,"-"); mag=(uint32_t)(-(value+1))+1U; }
+    else mag=(uint32_t)value;
+    p=ui_append_uint_text(buffer,size,p,mag/10U,1U);
+    p=ui_append_text(buffer,size,p,".");
+    p=ui_append_uint_text(buffer,size,p,mag%10U,1U);
+    (void)ui_append_text(buffer,size,p," dBFS");
+}
+
+static void ui_draw_fft_readings(void)
+{
+    const WavFftViewerInfo *info=WavFftViewer_GetInfo();
+    char freq[16],time[16],level[20];
+    if(info==NULL||!info->active) return;
+    Display_FillRect(34,34,112,18,COLOR_BLACK); Display_DrawString(36,36,"SEG",COLOR_WHITE,COLOR_BLACK); ui_draw_uint(62,36,info->segment_index+1U,COLOR_YELLOW); Display_DrawString(92,36,"/",COLOR_GRAY,COLOR_BLACK); ui_draw_uint(102,36,info->segment_count,COLOR_YELLOW);
+    ui_format_time_seconds(info->segment_time_ms,time,sizeof(time)); Display_FillRect(148,34,170,18,COLOR_BLACK); Display_DrawString(150,36,"TIME",COLOR_WHITE,COLOR_BLACK); Display_DrawString(190,36,time,COLOR_CYAN,COLOR_BLACK);
+    ui_format_peak_frequency(FFT_GetPeakFrequency(),freq,sizeof(freq)); ui_format_dbfs_tenths(FFT_GetPeakDbTenths(),level,sizeof(level)); Display_FillRect(34,54,284,18,COLOR_BLACK); Display_DrawString(36,56,"PEAK",COLOR_WHITE,COLOR_BLACK); Display_DrawString(74,56,freq,COLOR_GREEN,COLOR_BLACK); Display_DrawString(170,56,"LEVEL",COLOR_WHITE,COLOR_BLACK); Display_DrawString(218,56,level,COLOR_YELLOW,COLOR_BLACK);
+}
+
+static bool ui_fft_timeline_contains(uint16_t x, uint16_t y)
+{
+    return ui.fft_timeline_visible &&
+           (x >= UI_FFT_TIMELINE_X) &&
+           (x < (UI_FFT_TIMELINE_X + UI_FFT_TIMELINE_WIDTH)) &&
+           ((uint32_t)y + UI_FFT_TIMELINE_TOUCH_MARGIN >=
+            UI_FFT_TIMELINE_Y) &&
+           (y < (UI_FFT_TIMELINE_Y + UI_FFT_TIMELINE_HEIGHT +
+                 UI_FFT_TIMELINE_TOUCH_MARGIN));
+}
+
+static uint32_t ui_fft_timeline_segment_from_x(uint16_t x)
+{
+    const WavFftViewerInfo *info = WavFftViewer_GetInfo();
+    uint32_t relative_x;
+
+    if ((info == NULL) || !info->active ||
+        (info->segment_count <= 1U))
+    {
+        return 0U;
+    }
+
+    if (x <= UI_FFT_TIMELINE_X)
+    {
+        return 0U;
+    }
+
+    if (x >= (UI_FFT_TIMELINE_X + UI_FFT_TIMELINE_WIDTH - 1U))
+    {
+        return info->segment_count - 1U;
+    }
+
+    relative_x = x - UI_FFT_TIMELINE_X;
+
+    return (uint32_t)(
+        ((uint64_t)relative_x * (info->segment_count - 1U)) /
+        (UI_FFT_TIMELINE_WIDTH - 1U));
+}
+
+static void ui_draw_fft_timeline(void)
+{
+    const WavFftViewerInfo *info = WavFftViewer_GetInfo();
+    uint32_t segment_index;
+    int32_t cursor_x;
+
+    if (!ui.fft_timeline_visible ||
+        (info == NULL) || !info->active ||
+        (info->segment_count == 0U))
+    {
+        return;
+    }
+
+    segment_index = ui.fft_timeline_dragging ?
+        ui.fft_timeline_preview_segment : info->segment_index;
+
+    if (info->segment_count <= 1U)
+    {
+        cursor_x = UI_FFT_TIMELINE_X;
+    }
+    else
+    {
+        cursor_x = UI_FFT_TIMELINE_X + (int32_t)(
+            ((uint64_t)segment_index *
+             (UI_FFT_TIMELINE_WIDTH - 1U)) /
+            (info->segment_count - 1U));
+    }
+
+    Display_FillRect(UI_FFT_TIMELINE_X - 2,
+                     UI_FFT_TIMELINE_Y,
+                     UI_FFT_TIMELINE_WIDTH + 4U,
+                     UI_FFT_TIMELINE_HEIGHT,
+                     COLOR_BLACK);
+
+    /* Separate the FFT plot from the timeline without changing touch logic. */
+    Display_DrawLine(UI_GRAPH_LEFT,
+                     UI_FFT_TIMELINE_SEPARATOR_Y,
+                     UI_GRAPH_RIGHT,
+                     UI_FFT_TIMELINE_SEPARATOR_Y,
+                     COLOR_CYAN);
+    Display_DrawLine(UI_GRAPH_LEFT,
+                     UI_FFT_TIMELINE_SEPARATOR_Y + 1,
+                     UI_GRAPH_RIGHT,
+                     UI_FFT_TIMELINE_SEPARATOR_Y + 1,
+                     COLOR_DARK_GRAY);
+
+
+    for (uint32_t event_index = 0U;
+         event_index < WavFftViewer_GetEventCount();
+         event_index++)
+    {
+        const WavFftPeakEvent *event =
+            WavFftViewer_GetEvent(event_index);
+        int32_t event_x;
+        uint16_t event_color;
+
+        if ((event == NULL) || !event->valid)
+        {
+            continue;
+        }
+
+        if (info->segment_count <= 1U)
+        {
+            event_x = UI_FFT_TIMELINE_X;
+        }
+        else
+        {
+            event_x = UI_FFT_TIMELINE_X + (int32_t)(
+                ((uint64_t)event->segment_index *
+                 (UI_FFT_TIMELINE_WIDTH - 1U)) /
+                (info->segment_count - 1U));
+        }
+
+        event_color = (event_index == 0U) ? COLOR_RED : COLOR_YELLOW;
+        Display_DrawLine(event_x,
+                         UI_FFT_TIMELINE_Y + 4,
+                         event_x,
+                         UI_FFT_TIMELINE_LINE_Y - 2,
+                         event_color);
+        Display_DrawLine(event_x - 2,
+                         UI_FFT_TIMELINE_Y + 4,
+                         event_x + 2,
+                         UI_FFT_TIMELINE_Y + 4,
+                         event_color);
+    }
+
+    Display_DrawLine(UI_FFT_TIMELINE_X,
+                     UI_FFT_TIMELINE_LINE_Y,
+                     UI_FFT_TIMELINE_X +
+                         (int32_t)UI_FFT_TIMELINE_WIDTH - 1,
+                     UI_FFT_TIMELINE_LINE_Y,
+                     COLOR_GRAY);
+    Display_DrawLine(cursor_x,
+                     UI_FFT_TIMELINE_Y + 2,
+                     cursor_x,
+                     UI_FFT_TIMELINE_Y +
+                         (int32_t)UI_FFT_TIMELINE_HEIGHT - 3,
+                     ui.fft_timeline_dragging ? COLOR_YELLOW : COLOR_WHITE);
+    Display_DrawLine(cursor_x - 2,
+                     UI_FFT_TIMELINE_Y + 2,
+                     cursor_x + 2,
+                     UI_FFT_TIMELINE_Y + 2,
+                     ui.fft_timeline_dragging ? COLOR_YELLOW : COLOR_WHITE);
+}
+
+static void ui_draw_db_grid(void)
+{
+    static const int16_t levels[] =
+    {
+        0,
+        -200,
+        -400,
+        -600,
+        -800
+    };
+    int32_t quarter_width = (int32_t)UI_GRAPH_WIDTH / 4;
+
+    Display_DrawRect(UI_GRAPH_LEFT,
+                     UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH,
+                     ui_recorded_fft_graph_height(),
+                     COLOR_GRAY);
+
+    for (uint32_t index = 0U;
+         index < (sizeof(levels) / sizeof(levels[0]));
+         index++)
+    {
+        int32_t y = ui_db_tenths_to_y(levels[index]);
+
+        Display_DrawLine(UI_GRAPH_LEFT,
+                         y,
+                         UI_GRAPH_RIGHT,
+                         y,
+                         COLOR_DARK_GRAY);
+        ui_draw_signed_db(3, y + 1, levels[index], COLOR_GRAY);
+    }
+
+    for (int32_t x = UI_GRAPH_LEFT + quarter_width;
+         x < UI_GRAPH_RIGHT;
+         x += quarter_width)
+    {
+        Display_DrawLine(x,
+                         UI_GRAPH_TOP,
+                         x,
+                         ui_recorded_fft_graph_bottom(),
+                         COLOR_DARK_GRAY);
+    }
+
+}
+
+static void ui_draw_db_spectrum_trace(void)
+{
+    uint32_t first_bin = ui.first_bin;
+    uint32_t last_bin = ui_last_visible_bin();
+
+    if (last_bin <= first_bin)
+    {
+        return;
+    }
+
+    for (uint32_t bin = first_bin + 1U;
+         bin <= last_bin;
+         bin++)
+    {
+        int32_t x0 = ui_bin_to_x(bin - 1U);
+        int32_t y0 = ui_db_tenths_to_y(
+            FFT_GetDbTenths(bin - 1U));
+        int32_t x1 = ui_bin_to_x(bin);
+        int32_t y1 = ui_db_tenths_to_y(
+            FFT_GetDbTenths(bin));
+
+        Display_DrawLine(x0, y0, x1, y1, COLOR_GREEN);
+    }
+}
+
+static void ui_draw_db_peak_marker(void)
+{
+    uint32_t peak_bin = FFT_GetPeakBin();
+    uint32_t last_bin = ui_last_visible_bin();
+    int32_t peak_x;
+    int32_t peak_y;
+    int32_t marker_top;
+
+    if ((peak_bin < ui.first_bin) ||
+        (peak_bin > last_bin))
+    {
+        return;
+    }
+
+    peak_x = ui_bin_to_x(peak_bin);
+    peak_y = ui_db_tenths_to_y(
+        FFT_GetPeakDbTenths());
+
+    if (peak_y > ui_recorded_fft_graph_bottom())
+    {
+        peak_y = ui_recorded_fft_graph_bottom();
+    }
+
+    marker_top = peak_y - 10;
+
+    if (marker_top < UI_GRAPH_TOP)
+    {
+        marker_top = UI_GRAPH_TOP;
+    }
+
+    Display_DrawLine(peak_x,
+                     marker_top,
+                     peak_x,
+                     peak_y,
+                     COLOR_RED);
+    Display_DrawLine(peak_x - 3,
+                     marker_top,
+                     peak_x + 3,
+                     marker_top,
+                     COLOR_RED);
 }
 
 static void ui_draw_grid(void)
@@ -1929,32 +2500,13 @@ static void ui_draw_status(void)
 
     if (ui.mode == UI_MODE_RECORDED_FFT)
     {
-        const WavFftViewerInfo *info = WavFftViewer_GetInfo();
-
-        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
-                         UI_STATUS_HEIGHT, COLOR_BLACK);
-        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
-                         UI_STATUS_HEIGHT, COLOR_GRAY);
-        Display_DrawString(4, UI_STATUS_TOP + 8,
-                           "SEG", COLOR_WHITE, COLOR_BLACK);
-
-        if ((info != NULL) && info->active)
+        if (!ui.fft_timeline_visible)
         {
-            ui_draw_uint(28, UI_STATUS_TOP + 8,
-                         info->segment_index + 1U, COLOR_YELLOW);
-            Display_DrawString(58, UI_STATUS_TOP + 8,
-                               "/", COLOR_WHITE, COLOR_BLACK);
-            ui_draw_uint(68, UI_STATUS_TOP + 8,
-                         info->segment_count, COLOR_YELLOW);
-            Display_DrawString(118, UI_STATUS_TOP + 8,
-                               "MS", COLOR_WHITE, COLOR_BLACK);
-            ui_draw_uint(138, UI_STATUS_TOP + 8,
-                         info->segment_time_ms, COLOR_YELLOW);
-            Display_DrawString(210, UI_STATUS_TOP + 8,
-                               "PEAK", COLOR_WHITE, COLOR_BLACK);
-            ui_draw_uint(246, UI_STATUS_TOP + 8,
-                         FFT_GetPeakFrequency(), COLOR_GREEN);
+            /* The FFT graph itself now owns rows 216 through 239. */
+            return;
         }
+
+        /* Timeline and separator already occupy the former status area. */
         return;
     }
 
@@ -2134,11 +2686,11 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
         }
         if (x < 256U)
         {
-            return UI_BUTTON_FFT_FULL;
+            return UI_BUTTON_FFT_SCAN;
         }
         if (x < DISPLAY_WIDTH)
         {
-            return UI_BUTTON_FFT_PEAK;
+            return UI_BUTTON_FFT_EXPORT;
         }
         return UI_BUTTON_NONE;
     }
@@ -2394,6 +2946,8 @@ static void ui_execute_button(UI_Button button)
             break;
 
         case UI_BUTTON_FFT_BACK:
+            ui.fft_timeline_visible = false;
+            ui.fft_timeline_dragging = false;
             ui.mode = UI_MODE_RECORDER;
             ui.graph_dirty = true;
             ui.controls_dirty = true;
@@ -2412,16 +2966,14 @@ static void ui_execute_button(UI_Button button)
             UART_SendString("UI RECORDED FFT NEXT REQUEST\r\n");
             break;
 
-        case UI_BUTTON_FFT_FULL:
-            ui_apply_full_span();
-            ui.graph_dirty = true;
-            UART_SendString("UI RECORDED FFT FULL\r\n");
+        case UI_BUTTON_FFT_SCAN:
+            ui.pending_action = UI_ACTION_FFT_SCAN;
+            UART_SendString("UI RECORDED FFT SCAN REQUEST\r\n");
             break;
 
-        case UI_BUTTON_FFT_PEAK:
-            ui_center_on_peak();
-            ui.graph_dirty = true;
-            UART_SendString("UI RECORDED FFT PEAK\r\n");
+        case UI_BUTTON_FFT_EXPORT:
+            ui.pending_action = UI_ACTION_FFT_EXPORT;
+            UART_SendString("UI RECORDED FFT EXPORT REQUEST\r\n");
             break;
 
         case UI_BUTTON_WAVEFORM_BACK:
@@ -2456,7 +3008,23 @@ static void ui_handle_touch_down(
     ui.previous_touch_y = touch->y;
 
     ui.touch_armed = false;
-    ui.pressed_button = ui_hit_test_button(touch->x, touch->y);
+
+    if ((ui.mode == UI_MODE_RECORDED_FFT) &&
+        ui_fft_timeline_contains(touch->x, touch->y))
+    {
+        ui.fft_timeline_dragging = true;
+        ui.fft_timeline_preview_segment =
+            ui_fft_timeline_segment_from_x(touch->x);
+        ui.requested_fft_segment =
+            ui.fft_timeline_preview_segment;
+        ui.fft_timeline_last_interaction_ms = HAL_GetTick();
+        ui.graph_dirty = true;
+        ui.pressed_button = UI_BUTTON_NONE;
+    }
+    else
+    {
+        ui.pressed_button = ui_hit_test_button(touch->x, touch->y);
+    }
     ui.pressed_rename_key =
         (ui.mode == UI_MODE_FILE_RENAME) ?
         ui_rename_key_at(touch->x, touch->y) : -1;
@@ -2475,7 +3043,24 @@ static void ui_handle_touch_move(const STMPE811_TouchData *touch)
         ui.dragging = true;
     }
 
-    if ((ui.mode == UI_MODE_ANALYZER) &&
+    if ((ui.mode == UI_MODE_RECORDED_FFT) &&
+        ui.fft_timeline_visible &&
+        ui.fft_timeline_dragging)
+    {
+        ui.fft_timeline_last_interaction_ms = HAL_GetTick();
+    }
+
+    if ((ui.mode == UI_MODE_RECORDED_FFT) &&
+        ui.fft_timeline_dragging)
+    {
+        ui.fft_timeline_preview_segment =
+            ui_fft_timeline_segment_from_x(touch->x);
+        ui.requested_fft_segment =
+            ui.fft_timeline_preview_segment;
+        ui.fft_timeline_last_interaction_ms = HAL_GetTick();
+        ui.graph_dirty = true;
+    }
+    else if ((ui.mode == UI_MODE_ANALYZER) &&
         (ui.touch_start_y >= UI_GRAPH_TOP) &&
         (ui.touch_start_y <= UI_GRAPH_BOTTOM))
     {
@@ -2502,11 +3087,38 @@ static void ui_handle_touch_up(void)
 {
     bool action_executed = false;
 
+    if ((ui.mode == UI_MODE_RECORDED_FFT) &&
+        ui.fft_timeline_dragging)
+    {
+        ui.requested_fft_segment =
+            ui.fft_timeline_preview_segment;
+        ui.pending_action = UI_ACTION_FFT_LOAD_SEGMENT;
+        ui.fft_timeline_dragging = false;
+        ui.fft_timeline_visible = true;
+        ui.fft_timeline_last_interaction_ms = HAL_GetTick();
+        UART_SendString("UI RECORDED FFT TIMELINE REQUEST\r\n");
+        action_executed = true;
+    }
     /* UI_FILES_TOUCH_FIX
      * Require the press to begin inside FILES, but allow the release
      * to drift slightly because this is a resistive touchscreen.
      */
-    if ((ui.mode == UI_MODE_RECORDER) &&
+    else if (!ui.dragging &&
+             (ui.mode == UI_MODE_RECORDED_FFT) &&
+             (ui.touch_start_y >= UI_GRAPH_TOP) &&
+             (ui.touch_start_y <= UI_GRAPH_BOTTOM) &&
+             (ui.previous_touch_y >= UI_GRAPH_TOP) &&
+             (ui.previous_touch_y <= UI_GRAPH_BOTTOM))
+    {
+        ui.fft_timeline_visible = !ui.fft_timeline_visible;
+        ui.fft_timeline_last_interaction_ms = HAL_GetTick();
+        ui.graph_dirty = true;
+        UART_SendString(ui.fft_timeline_visible ?
+            "UI FFT TIMELINE SHOW\r\n" :
+            "UI FFT TIMELINE HIDE\r\n");
+        action_executed = true;
+    }
+    else if ((ui.mode == UI_MODE_RECORDER) &&
         (ui.touch_start_x >= UI_FILES_X) &&
         (ui.touch_start_x < (UI_FILES_X + UI_FILES_WIDTH)) &&
         (ui.touch_start_y >= UI_FILES_Y) &&

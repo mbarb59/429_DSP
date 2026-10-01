@@ -15,6 +15,9 @@ typedef enum
     UI_ACTION_FFT_BACK,
     UI_ACTION_FFT_PREVIOUS,
     UI_ACTION_FFT_NEXT,
+    UI_ACTION_FFT_SCAN,
+    UI_ACTION_FFT_EXPORT,
+    UI_ACTION_FFT_LOAD_SEGMENT,
     UI_ACTION_BROWSER_OPEN,
     UI_ACTION_BROWSER_BACK,
     UI_ACTION_BROWSER_PREVIOUS,
@@ -70,6 +73,9 @@ void UI_ResetRecordingProgress(void);
 void UI_NotifySpectrumChanged(void);
 
 UI_Action UI_GetPendingAction(void);
+
+/* RECORDED_FFT_TIMELINE_SCRUBBER_PATCH */
+uint32_t UI_GetRequestedFftSegment(void);
 void UI_SetRecorderStatus(
     const UI_RecorderStatus *status);
 bool UI_IsRecorderScreen(void);

@@ -15,10 +15,18 @@
 #define RECORDING_BITS_PER_SAMPLE     16U
 #define RECORDING_SPACE_RESERVE_KIB   64U
 
+typedef enum
+{
+    RECORDING_FILE_TYPE_NONE = 0,
+    RECORDING_FILE_TYPE_WAV,
+    RECORDING_FILE_TYPE_CSV
+} RecordingFileType;
+
 typedef struct
 {
     char filename[RECORDING_FILENAME_CAPACITY];
     uint32_t file_size;
+    RecordingFileType file_type;
 } RecordingCatalogEntry;
 
 typedef struct
@@ -40,6 +48,11 @@ FRESULT RecordingCatalog_CheckSpace(
     uint32_t sample_rate_hz,
     RecordingSpaceCheck *check);
 const char *RecordingCatalog_GetSelected(void);
+/* FFT_DISPLAY_CSV_BROWSER_COMBINED_PATCH */
+RecordingFileType RecordingCatalog_GetFileType(const char *filename);
+RecordingFileType RecordingCatalog_GetSelectedType(void);
+bool RecordingCatalog_SelectedIsWav(void);
+bool RecordingCatalog_SelectedIsCsv(void);
 bool RecordingCatalog_SetSelected(const char *filename);
 
 /* UI_WAV_BROWSER_V2_PATCH */

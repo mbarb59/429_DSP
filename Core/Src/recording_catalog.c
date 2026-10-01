@@ -9,6 +9,7 @@
 static char selected_filename[RECORDING_FILENAME_CAPACITY];
 
 /* UI_WAV_BROWSER_V2_PATCH */
+/* FFT_DISPLAY_CSV_BROWSER_COMBINED_PATCH */
 static RecordingCatalogEntry browser_entries[RECORDING_BROWSER_PAGE_SIZE];
 static uint32_t browser_page_index;
 static uint32_t browser_page_count;
@@ -140,36 +141,40 @@ bool RecordingCatalog_SetSelected(const char *filename)
     return true;
 }
 
-static bool filename_is_wav(const char *filename)
+static bool ext3(const char *name, char a, char b, char d)
 {
-    size_t length;
-
-    if (filename == NULL)
-    {
-        return false;
-    }
-
-    length = strlen(filename);
-    if (length < 4U)
-    {
-        return false;
-    }
-
-    return (filename[length - 4U] == '.') &&
-           ((filename[length - 3U] == 'W') ||
-            (filename[length - 3U] == 'w')) &&
-           ((filename[length - 2U] == 'A') ||
-            (filename[length - 2U] == 'a')) &&
-           ((filename[length - 1U] == 'V') ||
-            (filename[length - 1U] == 'v'));
+    size_t n; char x, y, z;
+    if (name == NULL) return false;
+    n = strlen(name); if (n < 4U) return false;
+    x=name[n-3U]; y=name[n-2U]; z=name[n-1U];
+    if (x>='a'&&x<='z') x=(char)(x-'a'+'A');
+    if (y>='a'&&y<='z') y=(char)(y-'a'+'A');
+    if (z>='a'&&z<='z') z=(char)(z-'a'+'A');
+    return name[n-4U]=='.' && x==a && y==b && z==d;
 }
+RecordingFileType RecordingCatalog_GetFileType(const char *name)
+{
+    if (ext3(name,'W','A','V')) return RECORDING_FILE_TYPE_WAV;
+    if (ext3(name,'C','S','V')) return RECORDING_FILE_TYPE_CSV;
+    return RECORDING_FILE_TYPE_NONE;
+}
+RecordingFileType RecordingCatalog_GetSelectedType(void)
+{ return RecordingCatalog_GetFileType(selected_filename); }
+bool RecordingCatalog_SelectedIsWav(void)
+{ return RecordingCatalog_GetSelectedType()==RECORDING_FILE_TYPE_WAV; }
+bool RecordingCatalog_SelectedIsCsv(void)
+{ return RecordingCatalog_GetSelectedType()==RECORDING_FILE_TYPE_CSV; }
+static bool filename_is_wav(const char *name)
+{ return RecordingCatalog_GetFileType(name)==RECORDING_FILE_TYPE_WAV; }
+static bool filename_is_browsable(const char *name)
+{ return RecordingCatalog_GetFileType(name)!=RECORDING_FILE_TYPE_NONE; }
 
 FRESULT RecordingCatalog_LoadPage(uint32_t page_index)
 {
     DIR directory;
     FILINFO information;
     FRESULT result;
-    uint32_t wav_count = 0U;
+    uint32_t file_count = 0U;
     uint32_t first_entry = page_index * RECORDING_BROWSER_PAGE_SIZE;
 
     result = FileSystem_Mount();
@@ -196,12 +201,12 @@ FRESULT RecordingCatalog_LoadPage(uint32_t page_index)
         }
 
         if (((information.fattrib & AM_DIR) != 0U) ||
-            !filename_is_wav(information.fname))
+            !filename_is_browsable(information.fname))
         {
             continue;
         }
 
-        if ((wav_count >= first_entry) &&
+        if ((file_count >= first_entry) &&
             (browser_entry_count < RECORDING_BROWSER_PAGE_SIZE))
         {
             RecordingCatalogEntry *entry =
@@ -212,10 +217,11 @@ FRESULT RecordingCatalog_LoadPage(uint32_t page_index)
                     RECORDING_FILENAME_CAPACITY - 1U);
             entry->filename[RECORDING_FILENAME_CAPACITY - 1U] = '\0';
             entry->file_size = (uint32_t)information.fsize;
+            entry->file_type = RecordingCatalog_GetFileType(information.fname);
             browser_entry_count++;
         }
 
-        wav_count++;
+        file_count++;
     }
 
     (void)f_closedir(&directory);
@@ -225,7 +231,7 @@ FRESULT RecordingCatalog_LoadPage(uint32_t page_index)
     }
 
     browser_page_count =
-        (wav_count + RECORDING_BROWSER_PAGE_SIZE - 1U) /
+        (file_count + RECORDING_BROWSER_PAGE_SIZE - 1U) /
         RECORDING_BROWSER_PAGE_SIZE;
 
     if (browser_page_count == 0U)
@@ -293,7 +299,7 @@ bool RecordingCatalog_EnsureSelectedValid(void)
 
         if ((result == FR_OK) &&
             ((information.fattrib & AM_DIR) == 0U) &&
-            filename_is_wav(selected_filename))
+            filename_is_browsable(selected_filename))
         {
             return true;
         }
@@ -428,7 +434,7 @@ FRESULT RecordingCatalog_DeleteFile(const char *filename)
     length = strlen(filename);
     if ((length == 0U) ||
         (length >= RECORDING_FILENAME_CAPACITY) ||
-        !filename_is_wav(filename))
+        !filename_is_browsable(filename))
     {
         return FR_INVALID_NAME;
     }
