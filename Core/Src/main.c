@@ -158,6 +158,7 @@ static uint32_t analyzer_last_display_ms;
 /* FFT_EVENT_SCAN_MARKERS_PATCH */
 /* CSV_SAFETY_GUARDS_MAIN_PATCH */
 /* TFT_FFT_SCAN_EXPORT_PATCH */
+/* TFT_FFT_EXPORT_ALL_LONG_PRESS_PATCH */
 /* RECORDED_FFT_TIMELINE_SCRUBBER_PATCH */
 /* UI_WAV_BROWSER_V2_PATCH */
 /* UI_FILE_ACTION_SCREEN_PATCH */
@@ -4930,6 +4931,16 @@ static void UI_ProcessRecorderActions(void)
                 break;
             }
             Console_RunFftExport();
+            break;
+
+        case UI_ACTION_FFT_EXPORT_ALL:
+            if (!RecordingCatalog_SelectedIsWav())
+            {
+                UART_SendString(
+                    "FFT event export blocked: select a WAV file\r\n");
+                break;
+            }
+            Console_RunFftExportEvents();
             break;
 
         case UI_ACTION_FFT_LOAD_SEGMENT:

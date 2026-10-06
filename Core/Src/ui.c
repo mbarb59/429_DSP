@@ -56,6 +56,7 @@
 /* RECORDED_FFT_RECLAIM_BOTTOM_PATCH */
 /* FFT_EVENT_SCAN_MARKERS_PATCH */
 /* TFT_FFT_SCAN_EXPORT_PATCH */
+/* TFT_FFT_EXPORT_ALL_LONG_PRESS_PATCH */
 #define UI_RECORDED_FFT_GRAPH_BOTTOM     (UI_FFT_TIMELINE_SEPARATOR_Y - 1)
 #define UI_RECORDED_FFT_GRAPH_HEIGHT     (UI_RECORDED_FFT_GRAPH_BOTTOM - UI_GRAPH_TOP + 1)
 
@@ -82,6 +83,7 @@
 
 /* UI_TOUCH_STABILITY_PATCH */
 #define UI_TOUCH_ACTION_LOCKOUT_MS  225U
+#define UI_FFT_EXPORT_ALL_HOLD_MS       1200U
 #define UI_TOUCH_RELEASE_POLLS      2U
 
 /* UI_RECORDER_LABEL_FIX */
@@ -250,6 +252,7 @@ typedef struct
 
     uint32_t last_touch_poll_ms;
     uint32_t last_touch_action_ms;
+    uint32_t touch_down_ms;
     uint32_t released_poll_count;
     bool touch_armed;
     UI_Button pressed_button;
@@ -380,6 +383,7 @@ void UI_Init(void)
     ui.previous_touch_y = 0U;
     ui.last_touch_poll_ms = HAL_GetTick();
     ui.last_touch_action_ms = 0U;
+    ui.touch_down_ms = 0U;
     ui.released_poll_count = UI_TOUCH_RELEASE_POLLS;
     ui.touch_armed = true;
     ui.pressed_button = UI_BUTTON_NONE;
@@ -3003,6 +3007,7 @@ static void ui_handle_touch_down(
 
     ui.touch_start_x = touch->x;
     ui.touch_start_y = touch->y;
+    ui.touch_down_ms = HAL_GetTick();
 
     ui.previous_touch_x = touch->x;
     ui.previous_touch_y = touch->y;
@@ -3219,7 +3224,18 @@ static void ui_handle_touch_up(void)
         if ((ui.pressed_button != UI_BUTTON_NONE) &&
             (released_button == ui.pressed_button))
         {
-            ui_execute_button(ui.pressed_button);
+            if ((ui.pressed_button == UI_BUTTON_FFT_EXPORT) &&
+                ((HAL_GetTick() - ui.touch_down_ms) >=
+                 UI_FFT_EXPORT_ALL_HOLD_MS))
+            {
+                ui.pending_action = UI_ACTION_FFT_EXPORT_ALL;
+                UART_SendString(
+                    "UI RECORDED FFT EXPORT ALL REQUEST\r\n");
+            }
+            else
+            {
+                ui_execute_button(ui.pressed_button);
+            }
             action_executed = true;
         }
     }
