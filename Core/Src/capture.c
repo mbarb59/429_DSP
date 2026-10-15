@@ -22,6 +22,9 @@ uint32_t sampleCount;
 volatile int captureComplete;
 uint32_t dmaCaptureCycles;
 uint32_t sampleRate;
+uint16_t xyzSampleBuffer[CAPTURE_XYZ_VALUE_COUNT];
+uint32_t xyzFrameCount;
+static volatile uint8_t xyz_capture_active;
 
 static uint32_t capture_start_cycles;
 static uint32_t configured_rate_hz = CAPTURE_DEFAULT_RATE_HZ;
@@ -414,6 +417,52 @@ static void recorder_update_signal_statistics(
     }
 }
 
+void DMA_CaptureXYZSamples(void)
+{
+    DMA_Init();
+    if ((capture_initialized == 0U) || !capture_is_idle() ||
+        Capture_IsRecorderActive())
+    {
+        captureComplete = -1;
+        return;
+    }
+
+    tim2_stop();
+    ADC_DisableDMA();
+    ADC_UseSoftwareTrigger();
+    dma2_stream0_disable();
+    dma2_stream0_clear_flags();
+
+    if (!ADC_ConfigureXYZScan())
+    {
+        captureComplete = -1;
+        return;
+    }
+
+    captureComplete = 0;
+    sampleCount = 0U;
+    xyzFrameCount = 0U;
+    dmaCaptureCycles = 0U;
+    sampleRate = configured_rate_hz;
+    ADC1->SR = 0U;
+    DMA2_Stream0->PAR = (uint32_t)&ADC1->DR;
+    DMA2_Stream0->M0AR = (uint32_t)xyzSampleBuffer;
+    DMA2_Stream0->NDTR = CAPTURE_XYZ_VALUE_COUNT;
+    ADC_UseTimer2Trigger();
+    ADC_EnableDMA();
+    xyz_capture_active = 1U;
+    capture_start_cycles = DWT->CYCCNT;
+    DMA2_Stream0->CR |= DMA_SxCR_EN;
+    TIM2->CNT = 0U;
+    TIM2->SR = 0U;
+    TIM2->CR1 |= TIM_CR1_CEN;
+}
+
+bool Capture_IsXYZActive(void)
+{
+    return xyz_capture_active != 0U;
+}
+
 bool Capture_StartRecorder(uint32_t duration_seconds)
 {
     uint64_t target_samples;
@@ -673,6 +722,25 @@ void DMA2_Stream0_IRQHandler(void)
         return;
     }
 
+    if ((xyz_capture_active != 0U) &&
+        ((status & DMA_LISR_TCIF0) != 0U))
+    {
+        uint32_t stop_cycles = DWT->CYCCNT;
+        tim2_stop();
+        dma2_stream0_clear_flags();
+        dma2_stream0_disable();
+        ADC_DisableDMA();
+        ADC_UseSoftwareTrigger();
+        ADC_RestoreSingleInput();
+        dmaCaptureCycles = stop_cycles - capture_start_cycles;
+        xyzFrameCount = CAPTURE_XYZ_FRAME_COUNT;
+        sampleCount = 0U;
+        sampleRate = configured_rate_hz;
+        xyz_capture_active = 0U;
+        captureComplete = 1;
+        return;
+    }
+
     if ((status & DMA_LISR_TCIF0) != 0U)
     {
         uint32_t stop_cycles = DWT->CYCCNT;
@@ -703,6 +771,8 @@ void DMA2_Stream0_IRQHandler(void)
 
         sampleCount = 0U;
         dmaCaptureCycles = 0U;
+        xyz_capture_active = 0U;
+        ADC_RestoreSingleInput();
         captureComplete = -1;
     }
 }

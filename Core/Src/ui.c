@@ -211,6 +211,25 @@ typedef struct
     bool dragging;
     bool graph_dirty;
     bool controls_dirty;
+    /* ACCEL_TOUCH_LIVE_UI_V4 */
+    bool accel_live_screen;
+    bool accel_live_running;
+    uint32_t accel_live_frames;
+    uint32_t accel_live_peak_hz;
+    uint32_t accel_live_magnitude;
+    uint32_t accel_live_rms;
+    uint32_t accel_live_source; /* 0=X, 1=Y, 2=Z, 3=XYZ */
+    uint32_t accel_xyz_view_axis;
+    uint32_t accel_xyz_rms[3];
+    uint32_t accel_xyz_peak_hz[3];
+    uint32_t accel_xyz_peak_mag[3];
+    uint8_t accel_xyz_clip[3];
+    uint32_t accel_xyz_vector_rms;
+    uint32_t accel_xyz_dominant_axis;
+    bool xyz_save_page;
+    char xyz_save_message[32];
+    /* ACCEL_PEAK_AUTOSCALE_V1 */
+    uint8_t accel_live_autoscale_down_frames;
 
     UI_Mode mode;
     UI_Action pending_action;
@@ -335,6 +354,23 @@ void UI_Init(void)
     ui.dragging = false;
     ui.graph_dirty = true;
     ui.controls_dirty = true;
+    ui.accel_live_screen = false;
+    ui.accel_live_running = false;
+    ui.accel_live_frames = 0U;
+    ui.accel_live_peak_hz = 0U;
+    ui.accel_live_magnitude = 0U;
+    ui.accel_live_rms = 0U;
+    ui.accel_live_source = 0U;
+    ui.accel_xyz_view_axis = 0U;
+    memset(ui.accel_xyz_rms, 0, sizeof(ui.accel_xyz_rms));
+    memset(ui.accel_xyz_peak_hz, 0, sizeof(ui.accel_xyz_peak_hz));
+    memset(ui.accel_xyz_peak_mag, 0, sizeof(ui.accel_xyz_peak_mag));
+    memset(ui.accel_xyz_clip, 0, sizeof(ui.accel_xyz_clip));
+    ui.accel_xyz_vector_rms = 0U;
+    ui.accel_xyz_dominant_axis = 0U;
+    ui.xyz_save_page = false;
+    ui.xyz_save_message[0] = '\0';
+    ui.accel_live_autoscale_down_frames = 0U;
     ui.mode = UI_MODE_ANALYZER;
     ui.pending_action = UI_ACTION_NONE;
     memset(&ui.wav_info, 0, sizeof(ui.wav_info));
@@ -968,6 +1004,198 @@ uint32_t UI_GetBrowserPendingRow(void)
     return ui.browser_pending_row;
 }
 
+void UI_ShowAccelLive(void)
+{
+    ui.mode = UI_MODE_ANALYZER;
+    ui.running = false;
+    ui.accel_live_screen = true;
+    ui.accel_live_running = false;
+    ui.accel_live_frames = 0U;
+    ui.accel_live_peak_hz = 0U;
+    ui.accel_live_magnitude = 0U;
+    ui.accel_live_rms = 0U;
+    ui.accel_live_source = 0U;
+    ui.accel_xyz_view_axis = 0U;
+    memset(ui.accel_xyz_rms, 0, sizeof(ui.accel_xyz_rms));
+    memset(ui.accel_xyz_peak_hz, 0, sizeof(ui.accel_xyz_peak_hz));
+    memset(ui.accel_xyz_peak_mag, 0, sizeof(ui.accel_xyz_peak_mag));
+    memset(ui.accel_xyz_clip, 0, sizeof(ui.accel_xyz_clip));
+    ui.accel_xyz_vector_rms = 0U;
+    ui.accel_xyz_dominant_axis = 0U;
+    ui.xyz_save_page = false;
+    ui.xyz_save_message[0] = '\0';
+    ui.accel_live_autoscale_down_frames = 0U;
+    ui_apply_full_span();
+    ui.graph_dirty = true;
+    ui.controls_dirty = true;
+    Display_Clear(COLOR_BLACK);
+}
+
+bool UI_IsAccelLiveScreen(void)
+{
+    return ui.accel_live_screen && (ui.mode == UI_MODE_ANALYZER);
+}
+
+void UI_ShowXYZSavePage(void)
+{
+    if (!UI_IsAccelLiveScreen() || ui.accel_live_running ||
+        (ui.accel_live_source != 3U)) return;
+    ui.xyz_save_page = true;
+    ui.xyz_save_message[0] = '\0';
+    ui.controls_dirty = true;
+}
+
+void UI_HideXYZSavePage(void)
+{
+    ui.xyz_save_page = false;
+    ui.controls_dirty = true;
+}
+
+bool UI_IsXYZSavePage(void)
+{
+    return UI_IsAccelLiveScreen() && ui.xyz_save_page;
+}
+
+void UI_SetXYZSaveMessage(const char *message)
+{
+    uint32_t i=0U;
+    if(message==NULL) message="";
+    while((message[i]!='\0')&&(i<(sizeof(ui.xyz_save_message)-1U)))
+    { ui.xyz_save_message[i]=message[i]; i++; }
+    ui.xyz_save_message[i]='\0';
+    if(UI_IsXYZSavePage()) ui.controls_dirty=true;
+}
+
+void UI_SetAccelSource(uint32_t source)
+{
+    if (source > 3U)
+    {
+        source = 0U;
+    }
+    ui.accel_live_source = source;
+    if (UI_IsAccelLiveScreen())
+    {
+        ui.controls_dirty = true;
+    }
+}
+
+uint32_t UI_GetAccelSource(void)
+{
+    return ui.accel_live_source;
+}
+
+void UI_SetAccelXYZSummary(bool running,
+                           uint32_t frames,
+                           uint32_t view_axis,
+                           const uint32_t rms[3],
+                           const uint32_t peak_hz[3],
+                           const uint32_t peak_mag[3],
+                           const uint8_t clip_flags[3],
+                           uint32_t vector_rms,
+                           uint32_t dominant_axis)
+{
+    uint32_t axis;
+    if (view_axis > 2U) view_axis = 0U;
+    ui.accel_live_source = 3U;
+    ui.accel_xyz_view_axis = view_axis;
+    ui.accel_live_running = running;
+    ui.accel_live_frames = frames;
+    ui.accel_xyz_vector_rms = vector_rms;
+    ui.accel_xyz_dominant_axis = dominant_axis;
+    for (axis = 0U; axis < 3U; axis++)
+    {
+        ui.accel_xyz_rms[axis] = rms[axis];
+        ui.accel_xyz_peak_hz[axis] = peak_hz[axis];
+        ui.accel_xyz_peak_mag[axis] = peak_mag[axis];
+        ui.accel_xyz_clip[axis] = clip_flags[axis];
+    }
+    ui.accel_live_peak_hz = peak_hz[view_axis];
+    ui.accel_live_magnitude = peak_mag[view_axis];
+    ui.accel_live_rms = rms[view_axis];
+    if (UI_IsAccelLiveScreen()) ui.controls_dirty = true;
+}
+
+void UI_SetAccelLiveStatus(bool running, uint32_t frames,
+                           uint32_t peak_hz, uint32_t magnitude,
+                           uint32_t rms)
+{
+    ui.accel_live_running = running;
+    ui.accel_live_frames = frames;
+    ui.accel_live_peak_hz = peak_hz;
+    ui.accel_live_magnitude = magnitude;
+    ui.accel_live_rms = rms;
+
+    if (running && UI_IsAccelLiveScreen())
+    {
+        uint32_t target_scale;
+        uint32_t rounded_scale;
+
+        /* Four times the peak keeps a small signal visible with headroom. */
+        target_scale = magnitude * 4U;
+
+        if (target_scale < 8U)
+        {
+            target_scale = 8U;
+        }
+
+        if (target_scale > UI_MAX_MAGNITUDE_MAX)
+        {
+            target_scale = UI_MAX_MAGNITUDE_MAX;
+        }
+
+        /* Round upward to a stable 1, 2, 5 x power-of-ten scale. */
+        rounded_scale = 1U;
+        while ((rounded_scale < target_scale) &&
+               (rounded_scale <= (UI_MAX_MAGNITUDE_MAX / 10U)))
+        {
+            rounded_scale *= 10U;
+        }
+
+        if ((rounded_scale / 5U) >= target_scale)
+        {
+            rounded_scale /= 5U;
+        }
+        else if ((rounded_scale / 2U) >= target_scale)
+        {
+            rounded_scale /= 2U;
+        }
+
+        if (rounded_scale < 8U)
+        {
+            rounded_scale = 8U;
+        }
+
+        if (rounded_scale > ui.magnitude_max)
+        {
+            /* Expand immediately so a sudden strong source is not clipped. */
+            ui.magnitude_max = rounded_scale;
+            ui.accel_live_autoscale_down_frames = 0U;
+            ui.graph_dirty = true;
+        }
+        else if (rounded_scale < ui.magnitude_max)
+        {
+            /* Require three quiet frames before reducing the scale. */
+            ui.accel_live_autoscale_down_frames++;
+
+            if (ui.accel_live_autoscale_down_frames >= 3U)
+            {
+                ui.magnitude_max = rounded_scale;
+                ui.accel_live_autoscale_down_frames = 0U;
+                ui.graph_dirty = true;
+            }
+        }
+        else
+        {
+            ui.accel_live_autoscale_down_frames = 0U;
+        }
+    }
+
+    if (UI_IsAccelLiveScreen())
+    {
+        ui.controls_dirty = true;
+    }
+}
+
 void UI_SetRunning(bool running)
 {
     if (ui.running != running)
@@ -1032,6 +1260,48 @@ uint32_t UI_GetMagnitudeMax(void)
 
 static void ui_draw_controls(void)
 {
+    if (UI_IsXYZSavePage())
+    {
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, COLOR_BLUE, COLOR_WHITE);
+        ui_draw_button(64, COLOR_CYAN, COLOR_WHITE);
+        ui_draw_button(128, COLOR_YELLOW, COLOR_WHITE);
+        ui_draw_button(192, COLOR_GREEN, COLOR_WHITE);
+        ui_draw_button(256, COLOR_MAGENTA, COLOR_WHITE);
+        Display_DrawString(12,12,"BACK",COLOR_WHITE,COLOR_BLUE);
+        Display_DrawString(78,12,"TIME",COLOR_BLACK,COLOR_CYAN);
+        Display_DrawString(148,12,"FFT",COLOR_BLACK,COLOR_YELLOW);
+        Display_DrawString(208,12,"BOTH",COLOR_BLACK,COLOR_GREEN);
+        Display_DrawString(270,12,"FILES",COLOR_WHITE,COLOR_MAGENTA);
+        return;
+    }
+
+    if (UI_IsAccelLiveScreen())
+    {
+        uint16_t run_color = ui.accel_live_running ? COLOR_RED : COLOR_GREEN;
+        uint16_t x_color = ((ui.accel_live_source == 0U) ||
+            ((ui.accel_live_source == 3U) && (ui.accel_xyz_view_axis == 0U))) ? COLOR_GREEN : COLOR_BLUE;
+        uint16_t y_color = ((ui.accel_live_source == 1U) ||
+            ((ui.accel_live_source == 3U) && (ui.accel_xyz_view_axis == 1U))) ? COLOR_GREEN : COLOR_BLUE;
+        uint16_t z_color = ((ui.accel_live_source == 2U) ||
+            ((ui.accel_live_source == 3U) && (ui.accel_xyz_view_axis == 2U))) ? COLOR_GREEN : COLOR_BLUE;
+        uint16_t xyz_color = (ui.accel_live_source == 3U) ? COLOR_GREEN : COLOR_MAGENTA;
+        Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
+                         UI_CONTROL_HEIGHT, COLOR_BLACK);
+        ui_draw_button(0, run_color, COLOR_WHITE);
+        ui_draw_button(64, x_color, COLOR_WHITE);
+        ui_draw_button(128, y_color, COLOR_WHITE);
+        ui_draw_button(192, z_color, COLOR_WHITE);
+        ui_draw_button(256, xyz_color, COLOR_WHITE);
+        Display_DrawString(8, 12,
+            ui.accel_live_running ? "STOP" : "START", COLOR_BLACK, run_color);
+        Display_DrawString(92, 12, "X", COLOR_WHITE, x_color);
+        Display_DrawString(156, 12, "Y", COLOR_WHITE, y_color);
+        Display_DrawString(220, 12, "Z", COLOR_WHITE, z_color);
+        Display_DrawString(272, 12, "XYZ", COLOR_WHITE, xyz_color);
+        return;
+    }
     uint16_t run_color = ui.running ? COLOR_GREEN : COLOR_RED;
 
     if (ui.mode == UI_MODE_RECORD_DURATION)
@@ -2410,6 +2680,76 @@ static void ui_draw_peak_marker(void)
 
 static void ui_draw_status(void)
 {
+    if (UI_IsXYZSavePage())
+    {
+        Display_FillRect(0,UI_STATUS_TOP,DISPLAY_WIDTH,UI_STATUS_HEIGHT,COLOR_BLACK);
+        Display_DrawRect(0,UI_STATUS_TOP,DISPLAY_WIDTH,UI_STATUS_HEIGHT,COLOR_CYAN);
+        Display_DrawString(4,UI_STATUS_TOP+8,"XYZ CSV SAVE",COLOR_CYAN,COLOR_BLACK);
+        Display_DrawString(112,UI_STATUS_TOP+8,
+            (ui.xyz_save_message[0]!='\0') ? ui.xyz_save_message : "SELECT FORMAT",
+            COLOR_YELLOW,COLOR_BLACK);
+        return;
+    }
+
+    if (UI_IsAccelLiveScreen() && (ui.accel_live_source == 3U))
+    {
+        const char *axis_name[3] = {"X", "Y", "Z"};
+        bool any_clip = (ui.accel_xyz_clip[0] | ui.accel_xyz_clip[1] |
+                         ui.accel_xyz_clip[2]) != 0U;
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         any_clip ? COLOR_RED :
+                         (ui.accel_live_running ? COLOR_GREEN : COLOR_YELLOW));
+        Display_DrawString(4, UI_STATUS_TOP + 8, "XYZ", COLOR_CYAN, COLOR_BLACK);
+        Display_DrawString(30, UI_STATUS_TOP + 8,
+            ui.accel_live_running ? "L" : "S",
+            ui.accel_live_running ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK);
+        Display_DrawString(42, UI_STATUS_TOP + 8, "X", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(52, UI_STATUS_TOP + 8, ui.accel_xyz_rms[0], COLOR_CYAN);
+        Display_DrawString(92, UI_STATUS_TOP + 8, "Y", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(102, UI_STATUS_TOP + 8, ui.accel_xyz_rms[1], COLOR_CYAN);
+        Display_DrawString(142, UI_STATUS_TOP + 8, "Z", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(152, UI_STATUS_TOP + 8, ui.accel_xyz_rms[2], COLOR_CYAN);
+        Display_DrawString(192, UI_STATUS_TOP + 8, "V", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(202, UI_STATUS_TOP + 8, ui.accel_xyz_vector_rms, COLOR_YELLOW);
+        Display_DrawString(252, UI_STATUS_TOP + 8, "D", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(264, UI_STATUS_TOP + 8,
+            axis_name[ui.accel_xyz_dominant_axis], COLOR_GREEN, COLOR_BLACK);
+        if (any_clip) Display_DrawString(280, UI_STATUS_TOP + 8, "CLIP", COLOR_RED, COLOR_BLACK);
+        return;
+    }
+
+    if (UI_IsAccelLiveScreen())
+    {
+        char frequency[16];
+        ui_format_peak_frequency(ui.accel_live_peak_hz,
+                                 frequency, sizeof(frequency));
+        Display_FillRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT, COLOR_BLACK);
+        Display_DrawRect(0, UI_STATUS_TOP, DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         ui.accel_live_running ? COLOR_GREEN : COLOR_YELLOW);
+        Display_DrawString(4, UI_STATUS_TOP + 8,
+            (ui.accel_live_source == 0U) ? "X" :
+            (ui.accel_live_source == 1U) ? "Y" :
+            (ui.accel_live_source == 2U) ? "Z" : "3",
+            COLOR_CYAN, COLOR_BLACK);
+        Display_DrawString(16, UI_STATUS_TOP + 8,
+            ui.accel_live_running ? "LIVE" : "STOP",
+            ui.accel_live_running ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK);
+        Display_DrawString(46, UI_STATUS_TOP + 8, "A", COLOR_MAGENTA, COLOR_BLACK);
+        Display_DrawString(58, UI_STATUS_TOP + 8, "PK", COLOR_WHITE, COLOR_BLACK);
+        Display_DrawString(78, UI_STATUS_TOP + 8, frequency, COLOR_GREEN, COLOR_BLACK);
+        Display_DrawString(144, UI_STATUS_TOP + 8, "M", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(156, UI_STATUS_TOP + 8, ui.accel_live_magnitude, COLOR_YELLOW);
+        Display_DrawString(196, UI_STATUS_TOP + 8, "R", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(208, UI_STATUS_TOP + 8, ui.accel_live_rms, COLOR_CYAN);
+        Display_DrawString(246, UI_STATUS_TOP + 8, "F", COLOR_WHITE, COLOR_BLACK);
+        ui_draw_uint(258, UI_STATUS_TOP + 8, ui.accel_live_frames, COLOR_YELLOW);
+        return;
+    }
     uint32_t first_bin = ui.first_bin;
 
     if (ui.mode == UI_MODE_RECORD_DURATION)
@@ -2763,32 +3103,77 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
 
 static void ui_execute_button(UI_Button button)
 {
+    if (UI_IsXYZSavePage())
+    {
+        switch(button)
+        {
+            case UI_BUTTON_RUN_STOP: ui.pending_action=UI_ACTION_XYZ_SAVE_BACK; break;
+            case UI_BUTTON_FULL: ui.pending_action=UI_ACTION_XYZ_SAVE_TIME; break;
+            case UI_BUTTON_ZOOM_OUT: ui.pending_action=UI_ACTION_XYZ_SAVE_FFT; break;
+            case UI_BUTTON_ZOOM_IN: ui.pending_action=UI_ACTION_XYZ_SAVE_BOTH; break;
+            case UI_BUTTON_PEAK: ui.pending_action=UI_ACTION_XYZ_SAVE_FILES; break;
+            default: break;
+        }
+        return;
+    }
+
     switch (button)
     {
         case UI_BUTTON_RUN_STOP:
-            UI_SetRunning(!ui.running);
-            UART_SendString(ui.running ? "UI RUN\r\n" : "UI STOP\r\n");
+            if (UI_IsAccelLiveScreen())
+            {
+                ui.pending_action = ui.accel_live_running ?
+                    UI_ACTION_ACCEL_STOP : UI_ACTION_ACCEL_START;
+                UART_SendString(ui.accel_live_running ?
+                    "UI ACCEL STOP REQUEST\r\n" :
+                    "UI ACCEL START REQUEST\r\n");
+            }
+            else
+            {
+                UI_SetRunning(!ui.running);
+                UART_SendString(ui.running ? "UI RUN\r\n" : "UI STOP\r\n");
+            }
             break;
 
         case UI_BUTTON_FULL:
+            if (UI_IsAccelLiveScreen())
+            {
+                ui.pending_action = UI_ACTION_ACCEL_X;
+                break;
+            }
             ui_apply_full_span();
             ui.graph_dirty = true;
             UART_SendString("UI FULL SPAN\r\n");
             break;
 
         case UI_BUTTON_ZOOM_OUT:
+            if (UI_IsAccelLiveScreen())
+            {
+                ui.pending_action = UI_ACTION_ACCEL_Y;
+                break;
+            }
             ui_zoom_out();
             ui.graph_dirty = true;
             UART_SendString("UI ZOOM OUT\r\n");
             break;
 
         case UI_BUTTON_ZOOM_IN:
+            if (UI_IsAccelLiveScreen())
+            {
+                ui.pending_action = UI_ACTION_ACCEL_Z;
+                break;
+            }
             ui_zoom_in();
             ui.graph_dirty = true;
             UART_SendString("UI ZOOM IN\r\n");
             break;
 
         case UI_BUTTON_PEAK:
+            if (UI_IsAccelLiveScreen())
+            {
+                ui.pending_action = UI_ACTION_ACCEL_XYZ;
+                break;
+            }
             ui_center_on_peak();
             ui.graph_dirty = true;
             UART_SendString("UI CENTER PEAK\r\n");

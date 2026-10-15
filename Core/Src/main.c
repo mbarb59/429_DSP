@@ -37,6 +37,7 @@
 #define FRAMEBUFFER_ADDR       0xD0000000U
 #define COMMAND_BUFFER_SIZE    64U
 #define DMA_TIMEOUT_MS         1000U
+#define DMA_TIMEOUT_MARGIN_MS       500U
 #define ANALYZER_DISPLAY_PERIOD_MS  50U
 
 #define SPECTRUM_TOP           20
@@ -47,20 +48,167 @@
 #define SPECTRUM_SCALE_MIN     100U
 #define SPECTRUM_SCALE_MAX     65535U
 
+#define ACCELST_SAMPLE_COUNT          256U
+#define ACCELST_DISCARD_COUNT         8U
+#define ACCELST_SETTLE_TIME_MS        10U
+#define ACCELST_ADC_TIMEOUT_MS        10U
+#define ACCELST_MAX_CAPTURE_P2P       150U
+
+#define ACCELST_X_DELTA_MIN          (-600)
+#define ACCELST_X_DELTA_MAX           (-40)
+#define ACCELST_Y_DELTA_MIN            40
+#define ACCELST_Y_DELTA_MAX           600
+#define ACCELST_Z_DELTA_MIN            60
+#define ACCELST_Z_DELTA_MAX           900
+
+typedef struct
+{
+    uint32_t average;
+    uint16_t minimum;
+    uint16_t maximum;
+    uint32_t peak_to_peak;
+} AccelSelfTestCapture;
+
+typedef struct
+{
+    AccelSelfTestCapture baseline;
+    AccelSelfTestCapture active;
+    int32_t delta;
+    bool result;
+} AccelSelfTestAxisResult;
+
+/* ACCEL_TOUCH_LIVE_UI_V4 */
+/* ACCEL_XYZ_CAPTURE_PHASE1 */
+/* ACCEL_TFT_XYZ_CONTROLS_V1 */
+/* ACCEL_XYZ_LIVE_SUMMARY_V1 */
+/* XYZ_TFT_SAVE_PAGE_V1 */
+#define ACCEL_PRESET_RATE_HZ       2048U
+#define ACCEL_PRESET_FFT_SIZE      2048U
+#define AUDIO_PRESET_RATE_HZ       CAPTURE_DEFAULT_RATE_HZ
+#define AUDIO_PRESET_FFT_SIZE      256U
+
+typedef enum
+{
+    ACCELRUN_IDLE = 0,
+    ACCELRUN_START_CAPTURE,
+    ACCELRUN_WAIT_CAPTURE
+} AccelRunState;
+
+static bool accelrun_active;
+static bool accelrun_stop_requested;
+static AccelRunState accelrun_state = ACCELRUN_IDLE;
+static ADC_Input accelrun_previous_input = ADC_INPUT_MICROPHONE_PA0;
+static ADC_Input accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
+static const char *accelrun_axis_name = "X";
+static uint32_t accelrun_deadline_ms;
+static uint32_t accelrun_frame_count;
+static uint32_t accelrun_error_count;
+static bool accelrun_xyz_mode;
+static uint32_t accelrun_xyz_view_axis;
+static uint32_t accelrun_xyz_rms[3];
+static uint32_t accelrun_xyz_peak_hz[3];
+static uint32_t accelrun_xyz_peak_mag[3];
+static uint8_t accelrun_xyz_clip[3];
+static uint32_t accelrun_xyz_vector_rms;
+static uint32_t accelrun_xyz_dominant_axis;
+/* XYZ_CSV_UART_V1 */
+static uint32_t xyz_csv_last_sequence;
+
 static void SystemClock_Config(void);
 static void Error_Handler(void);
 static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
+static bool Analyzer_SetPreset(uint32_t requested_rate_hz, uint32_t fft_size, const char *name);
+static void Console_RunAccelPreset(void);
+static void Console_RunSaveXYZTime(void);
+static void Console_RunSaveXYZFft(void);
+static void Console_RunSaveXYZBoth(void);
+static void Console_RunAudioPreset(void);
 static void UI_ProcessRecorderActions(void);
 static FRESULT UI_LoadSelectedWavInfo(UI_WavInfo *info);
 static void UI_UpdateRecorderStatus(void);
 static void Analyzer_Process(void);
+static void AccelRun_Process(void);
+static bool AccelXYZ_LoadView(uint32_t axis)
+{
+    uint32_t i;
+    if ((axis > 2U) || (xyzFrameCount != CAPTURE_XYZ_FRAME_COUNT)) return false;
+    for (i = 0U; i < xyzFrameCount; i++)
+        sampleBuffer[i] = xyzSampleBuffer[(i * 3U) + axis];
+    sampleCount = xyzFrameCount;
+    sampleRate = Capture_GetSampleRate();
+    return FFT_Process();
+}
+
+/* XYZ_INTEGER_SQRT_PROTOTYPE_FIX_V2 */
+static uint32_t AccelX_IntegerSqrt(uint64_t value);
+
+static bool AccelXYZ_ProcessFrame(void)
+{
+    uint32_t axis, i, sums[3] = {0U,0U,0U};
+    uint64_t squares[3] = {0U,0U,0U};
+    uint16_t minimum[3] = {4095U,4095U,4095U};
+    uint16_t maximum[3] = {0U,0U,0U};
+    uint32_t dc[3], largest_rms = 0U;
+    uint64_t vector_square = 0U;
+
+    if (xyzFrameCount != CAPTURE_XYZ_FRAME_COUNT) return false;
+    for (i=0U;i<xyzFrameCount;i++) for(axis=0U;axis<3U;axis++)
+    {
+        uint16_t v=xyzSampleBuffer[i*3U+axis];
+        sums[axis]+=v;
+        if(v<minimum[axis])minimum[axis]=v;
+        if(v>maximum[axis])maximum[axis]=v;
+    }
+    for(axis=0U;axis<3U;axis++) dc[axis]=sums[axis]/xyzFrameCount;
+    for(i=0U;i<xyzFrameCount;i++) for(axis=0U;axis<3U;axis++)
+    {
+        int32_t c=(int32_t)xyzSampleBuffer[i*3U+axis]-(int32_t)dc[axis];
+        squares[axis]+=(uint64_t)((int64_t)c*c);
+    }
+    for(axis=0U;axis<3U;axis++)
+    {
+        accelrun_xyz_rms[axis]=AccelX_IntegerSqrt(squares[axis]/xyzFrameCount);
+        accelrun_xyz_clip[axis]=0U;
+        if(minimum[axis]<=4U) accelrun_xyz_clip[axis]|=1U;
+        if(maximum[axis]>=4091U) accelrun_xyz_clip[axis]|=2U;
+        if(accelrun_xyz_rms[axis]>largest_rms)
+        { largest_rms=accelrun_xyz_rms[axis]; accelrun_xyz_dominant_axis=axis; }
+        vector_square+=(uint64_t)accelrun_xyz_rms[axis]*accelrun_xyz_rms[axis];
+        if(!AccelXYZ_LoadView(axis)) return false;
+        accelrun_xyz_peak_mag[axis]=FFT_GetMagnitude(FFT_GetPeakBin());
+        accelrun_xyz_peak_hz[axis]=(accelrun_xyz_peak_mag[axis]>=5U)?FFT_GetPeakFrequency():0U;
+    }
+    accelrun_xyz_vector_rms=AccelX_IntegerSqrt(vector_square);
+    return AccelXYZ_LoadView(accelrun_xyz_view_axis);
+}
+
+static void AccelRun_Finish(const char *reason);
+static void Console_RunAccelRun(void);
+static void Console_RunAccelStop(void);
+static bool AccelXYZ_ProcessFrame(void);
+static bool AccelXYZ_LoadView(uint32_t axis);
+static void Console_RunAccelUi(void);
+static void Console_RunAccelXYZ(void);
+static void Console_SelectAccelAxis(ADC_Input input,
+                                    const char *name,
+                                    uint32_t ui_source);
 static void FillRgbBars(volatile uint16_t *framebuffer);
 static void Console_Poll(void);
 static void Console_ProcessCommand(char *command);
 static void Console_RunFftExport(void);
 static void Console_RunFftExportEvents(void);
 static void Console_RunFftScan(void);
+static void Console_RunAccelX(void);
+static void Console_RunAccelY(void);
+static void Console_RunAccelZ(void);
+static bool Console_AccelSelfTestReadSample(uint16_t *sample);
+static bool Console_AccelSelfTestCaptureAxis(ADC_Input input, AccelSelfTestCapture *capture);
+static void Console_SendSignedDec(int32_t value);
+static void Console_PrintAccelSelfTestAxis(const char *axis_name, const AccelSelfTestAxisResult *result);
+static void Console_RunAccelSelfTest(void);
+static void Console_RunAccelPC1(void);
+static void Console_RunAccelFFT(void);
 static void Console_PrintPrompt(void);
 static void Console_PrintHelp(void);
 static void Console_PrintStatus(void);
@@ -641,6 +789,144 @@ static bool FftExport_MakeEventFilename(const char *wav_name,
     return true;
 }
 
+
+#define XYZ_CSV_LINE_CAPACITY 160U
+#define XYZ_CSV_MAX_SEQUENCE 9999U
+
+static void XYZCsv_MakeName(char kind, uint32_t number, char name[13])
+{
+    name[0]='X'; name[1]='Y'; name[2]='Z'; name[3]=kind;
+    name[4]=(char)('0'+((number/1000U)%10U));
+    name[5]=(char)('0'+((number/100U)%10U));
+    name[6]=(char)('0'+((number/10U)%10U));
+    name[7]=(char)('0'+(number%10U));
+    name[8]='.'; name[9]='C'; name[10]='S'; name[11]='V'; name[12]='\0';
+}
+
+static bool XYZCsv_FindSequence(uint32_t *sequence)
+{
+    FILINFO info;
+    char time_name[13], fft_name[13];
+    if (sequence==NULL) return false;
+    for(uint32_t n=1U;n<=XYZ_CSV_MAX_SEQUENCE;n++)
+    {
+        XYZCsv_MakeName('T',n,time_name); XYZCsv_MakeName('F',n,fft_name);
+        if((f_stat(time_name,&info)==FR_NO_FILE)&&(f_stat(fft_name,&info)==FR_NO_FILE))
+        { *sequence=n; return true; }
+    }
+    return false;
+}
+
+static bool XYZCsv_AppendLineUint(char *line,uint32_t cap,uint32_t *pos,uint32_t value)
+{
+    uint32_t next;
+    if((line==NULL)||(pos==NULL)||(*pos>=cap)) return false;
+    next=FftExport_AppendUint(line,cap,*pos,value);
+    if(next>=cap) return false;
+    *pos=next; return true;
+}
+
+static bool XYZCsv_AppendLineInt(char *line,uint32_t cap,uint32_t *pos,int32_t value)
+{
+    uint32_t next;
+    if((line==NULL)||(pos==NULL)||(*pos>=cap)) return false;
+    next=FftExport_AppendInt(line,cap,*pos,value);
+    if(next>=cap) return false;
+    *pos=next; return true;
+}
+
+static FRESULT XYZCsv_WriteTimeFile(uint32_t sequence,uint32_t *rows)
+{
+    FIL file; FRESULT result=FR_OK; bool ok=false; char name[13];
+    char line[XYZ_CSV_LINE_CAPACITY]; uint32_t dc[3]={0U,0U,0U};
+    if(rows==NULL) return FR_INVALID_PARAMETER; *rows=0U;
+    if(xyzFrameCount!=CAPTURE_XYZ_FRAME_COUNT) return FR_INVALID_OBJECT;
+    for(uint32_t i=0U;i<xyzFrameCount;i++) for(uint32_t a=0U;a<3U;a++)
+        dc[a]+=xyzSampleBuffer[i*3U+a];
+    for(uint32_t a=0U;a<3U;a++) dc[a]/=xyzFrameCount;
+    XYZCsv_MakeName('T',sequence,name);
+    result=f_open(&file,name,FA_CREATE_NEW|FA_WRITE); if(result!=FR_OK)return result;
+    ok=FftExport_Write(&file,"# format,429_DSP_XYZ_TIME_V1\r\n",&result);
+    if(ok)ok=FftExport_WriteKeyUint(&file,"# frame_rate_hz",Capture_GetSampleRate(),&result);
+    if(ok)ok=FftExport_WriteKeyUint(&file,"# frame_count",xyzFrameCount,&result);
+    if(ok)ok=FftExport_Write(&file,"# axis_order,X_Y_Z\r\n# inputs,PC1_CH11_PC5_CH15_PC4_CH14\r\n# units,adc_counts\r\n",&result);
+    if(ok)ok=FftExport_Write(&file,"sample,time_us,x_adc,y_adc,z_adc,x_centered,y_centered,z_centered\r\n",&result);
+    for(uint32_t i=0U;ok&&(i<xyzFrameCount);i++)
+    {
+        uint32_t p=0U; line[0]='\0';
+        ok=XYZCsv_AppendLineUint(line,sizeof(line),&p,i);
+        p=FftExport_AppendText(line,sizeof(line),p,",");
+        ok=ok&&XYZCsv_AppendLineUint(line,sizeof(line),&p,(uint32_t)(((uint64_t)i*1000000ULL)/Capture_GetSampleRate()));
+        for(uint32_t a=0U;a<3U;a++){p=FftExport_AppendText(line,sizeof(line),p,",");ok=ok&&XYZCsv_AppendLineUint(line,sizeof(line),&p,xyzSampleBuffer[i*3U+a]);}
+        for(uint32_t a=0U;a<3U;a++){p=FftExport_AppendText(line,sizeof(line),p,",");ok=ok&&XYZCsv_AppendLineInt(line,sizeof(line),&p,(int32_t)xyzSampleBuffer[i*3U+a]-(int32_t)dc[a]);}
+        (void)FftExport_AppendText(line,sizeof(line),p,"\r\n");
+        if(ok)ok=FftExport_Write(&file,line,&result); if(ok)(*rows)++;
+    }
+    if(ok){result=f_sync(&file);ok=(result==FR_OK);} {FRESULT c=f_close(&file);if(ok&&c!=FR_OK){result=c;ok=false;}}
+    if(!ok)(void)f_unlink(name); return ok?FR_OK:result;
+}
+
+static FRESULT XYZCsv_WriteFftFile(uint32_t sequence,uint32_t *rows)
+{
+    static uint32_t mags[3][CAPTURE_XYZ_FRAME_COUNT/2U];
+    FIL file; FRESULT result=FR_OK; bool ok=false; char name[13]; char line[XYZ_CSV_LINE_CAPACITY];
+    uint32_t peak_hz[3],peak_mag[3],rms[3];
+    if(rows==NULL)return FR_INVALID_PARAMETER;*rows=0U;
+    if(xyzFrameCount!=CAPTURE_XYZ_FRAME_COUNT)return FR_INVALID_OBJECT;
+    for(uint32_t a=0U;a<3U;a++)
+    {
+        if(!AccelXYZ_LoadView(a))return FR_INT_ERR;
+        rms[a]=FFT_GetRMS();peak_mag[a]=FFT_GetMagnitude(FFT_GetPeakBin());
+        peak_hz[a]=(peak_mag[a]>=5U)?FFT_GetPeakFrequency():0U;
+        for(uint32_t b=0U;b<FFT_GetBinCount();b++)mags[a][b]=FFT_GetMagnitude(b);
+    }
+    (void)AccelXYZ_LoadView(accelrun_xyz_view_axis);
+    XYZCsv_MakeName('F',sequence,name); result=f_open(&file,name,FA_CREATE_NEW|FA_WRITE);if(result!=FR_OK)return result;
+    ok=FftExport_Write(&file,"# format,429_DSP_XYZ_FFT_V1\r\n",&result);
+    if(ok)ok=FftExport_WriteKeyUint(&file,"# sample_rate_hz",Capture_GetSampleRate(),&result);
+    if(ok)ok=FftExport_WriteKeyUint(&file,"# fft_size",FFT_GetSize(),&result);
+    if(ok)ok=FftExport_WriteKeyUint(&file,"# bin_width_millihz",FFT_GetBinWidthMilliHz(),&result);
+    for(uint32_t a=0U;ok&&(a<3U);a++)
+    {
+        const char *pk[3]={"# x_peak_hz","# y_peak_hz","# z_peak_hz"}; const char *rk[3]={"# x_rms","# y_rms","# z_rms"};
+        ok=FftExport_WriteKeyUint(&file,pk[a],peak_hz[a],&result);if(ok)ok=FftExport_WriteKeyUint(&file,rk[a],rms[a],&result);
+    }
+    if(ok)ok=FftExport_Write(&file,"bin,frequency_millihz,x_magnitude,y_magnitude,z_magnitude\r\n",&result);
+    for(uint32_t b=0U;ok&&(b<FFT_GetBinCount());b++)
+    {
+        uint32_t p=0U;line[0]='\0'; ok=XYZCsv_AppendLineUint(line,sizeof(line),&p,b);
+        p=FftExport_AppendText(line,sizeof(line),p,",");ok=ok&&XYZCsv_AppendLineUint(line,sizeof(line),&p,(uint32_t)((uint64_t)b*FFT_GetBinWidthMilliHz()));
+        for(uint32_t a=0U;a<3U;a++){p=FftExport_AppendText(line,sizeof(line),p,",");ok=ok&&XYZCsv_AppendLineUint(line,sizeof(line),&p,mags[a][b]);}
+        (void)FftExport_AppendText(line,sizeof(line),p,"\r\n");if(ok)ok=FftExport_Write(&file,line,&result);if(ok)(*rows)++;
+    }
+    if(ok){result=f_sync(&file);ok=(result==FR_OK);} {FRESULT c=f_close(&file);if(ok&&c!=FR_OK){result=c;ok=false;}}
+    if(!ok)(void)f_unlink(name);return ok?FR_OK:result;
+}
+
+static bool XYZCsv_Prepare(uint32_t *sequence)
+{
+    if(accelrun_active||Capture_IsRecorderActive()){UART_SendString("XYZ CSV blocked: stop analyzer/recorder first\r\n");return false;}
+    if(xyzFrameCount!=CAPTURE_XYZ_FRAME_COUNT){UART_SendString("XYZ CSV blocked: no valid XYZ frame\r\n");return false;}
+    if(FileSystem_Mount()!=FR_OK){UART_SendString("XYZ CSV blocked: SD mount failed\r\n");return false;}
+    if(!XYZCsv_FindSequence(sequence)){UART_SendString("XYZ CSV blocked: filename range full\r\n");return false;}
+    return true;
+}
+
+static void XYZCsv_Report(char kind,uint32_t seq,uint32_t rows,FRESULT result)
+{
+    char name[13];XYZCsv_MakeName(kind,seq,name);UART_SendString("Output File = ");UART_SendString(name);
+    UART_SendString("\r\nRows = ");UART_SendDec(rows);UART_SendString("\r\nFatFs = ");UART_SendDec((uint32_t)result);
+    UART_SendString(result==FR_OK?"\r\nXYZ CSV: PASS\r\n":"\r\nXYZ CSV: FAIL\r\n");
+}
+
+static void Console_RunSaveXYZTime(void){uint32_t s0,r=0U;if(!XYZCsv_Prepare(&s0))return;FRESULT f=XYZCsv_WriteTimeFile(s0,&r);if(f==FR_OK)xyz_csv_last_sequence=s0;XYZCsv_Report('T',s0,r,f);}
+static void Console_RunSaveXYZFft(void){uint32_t s0,r=0U;if(!XYZCsv_Prepare(&s0))return;FRESULT f=XYZCsv_WriteFftFile(s0,&r);if(f==FR_OK)xyz_csv_last_sequence=s0;XYZCsv_Report('F',s0,r,f);}
+static void Console_RunSaveXYZBoth(void)
+{
+    uint32_t s0,tr=0U,fr=0U;if(!XYZCsv_Prepare(&s0))return;FRESULT a=XYZCsv_WriteTimeFile(s0,&tr);XYZCsv_Report('T',s0,tr,a);
+    if(a!=FR_OK)return;FRESULT b=XYZCsv_WriteFftFile(s0,&fr);XYZCsv_Report('F',s0,fr,b);if(b==FR_OK)xyz_csv_last_sequence=s0;
+}
+
 static FRESULT FftExport_WriteEventFile(const char *output_name,
                                         const char *source_name,
                                         uint32_t event_rank,
@@ -1039,6 +1325,1033 @@ static void Console_RunFftExport(void)
     UART_SendString(success ? "  PASS\r\n" : "  FAIL\r\n");
 }
 
+/* ACCELX_DIAGNOSTIC_PATCH */
+#define ACCELX_DIAGNOSTIC_SAMPLE_COUNT  256U
+#define ACCELX_LOW_RAIL_THRESHOLD        16U
+#define ACCELX_HIGH_RAIL_THRESHOLD     4079U
+
+/* ACCELX_SIGNAL_VALIDITY_PATCH */
+#define ACCELX_VALID_AVERAGE_MIN         64U
+#define ACCELX_VALID_AVERAGE_MAX       4031U
+#define ACCELX_MAX_ALLOWED_RAIL_HITS      0U
+
+static uint32_t AccelX_IntegerSqrt(uint64_t value)
+{
+    uint64_t bit = (uint64_t)1U << 62U;
+    uint64_t result = 0U;
+
+    while (bit > value)
+    {
+        bit >>= 2U;
+    }
+
+    while (bit != 0U)
+    {
+        if (value >= (result + bit))
+        {
+            value -= result + bit;
+            result = (result >> 1U) + bit;
+        }
+        else
+        {
+            result >>= 1U;
+        }
+
+        bit >>= 2U;
+    }
+
+    return (uint32_t)result;
+}
+
+static void Console_RunAccelX(void)
+{
+    uint16_t samples[ACCELX_DIAGNOSTIC_SAMPLE_COUNT];
+    ADC_Input previous_input;
+    uint32_t sum = 0U;
+    uint64_t squared_sum = 0U;
+    uint32_t average;
+    uint32_t rms;
+    uint32_t low_rail_hits = 0U;
+    uint32_t high_rail_hits = 0U;
+    uint16_t minimum = 0x0FFFU;
+    uint16_t maximum = 0U;
+    const char *signal_result;
+    bool signal_valid;
+    bool restored;
+
+    UART_SendString("ADXL335 X Diagnostic\r\n");
+    UART_SendString("--------------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("accelx blocked: recorder active\r\n");
+        return;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        UART_SendString("accelx blocked: analyzer active\r\n");
+        return;
+    }
+
+    previous_input = ADC_GetSelectedInput();
+
+    if (!ADC_SelectInput(ADC_INPUT_ACCEL_X_PC1))
+    {
+        UART_SendString("accelx blocked: ADC capture path active\r\n");
+        return;
+    }
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        uint16_t sample = ADC_Read();
+        samples[index] = sample;
+        sum += sample;
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+
+        if (sample <= ACCELX_LOW_RAIL_THRESHOLD)
+        {
+            low_rail_hits++;
+        }
+
+        if (sample >= ACCELX_HIGH_RAIL_THRESHOLD)
+        {
+            high_rail_hits++;
+        }
+    }
+
+    average = (sum + (ACCELX_DIAGNOSTIC_SAMPLE_COUNT / 2U)) /
+              ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        int32_t centered = (int32_t)samples[index] - (int32_t)average;
+        squared_sum += (uint64_t)((int64_t)centered * centered);
+    }
+
+    rms = AccelX_IntegerSqrt(
+        squared_sum / ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+
+    signal_valid = true;
+    signal_result = "PASS";
+
+    if (low_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL LOW RAIL";
+    }
+    else if (high_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL HIGH RAIL";
+    }
+    else if (average < ACCELX_VALID_AVERAGE_MIN)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE LOW";
+    }
+    else if (average > ACCELX_VALID_AVERAGE_MAX)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE HIGH";
+    }
+
+    restored = ADC_SelectInput(previous_input);
+
+    UART_SendString("Input         = PC1\r\n");
+    UART_SendString("ADC Channel   = 11\r\n");
+    UART_SendString("Samples       = ");
+    UART_SendDec(ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+    UART_SendString("\r\nAverage       = ");
+    UART_SendDec(average);
+    UART_SendString("\r\nMinimum       = ");
+    UART_SendDec(minimum);
+    UART_SendString("\r\nMaximum       = ");
+    UART_SendDec(maximum);
+    UART_SendString("\r\nPeak-to-Peak  = ");
+    UART_SendDec((uint32_t)maximum - minimum);
+    UART_SendString("\r\nCentered RMS  = ");
+    UART_SendDec(rms);
+    UART_SendString("\r\nLow Rail Hits = ");
+    UART_SendDec(low_rail_hits);
+    UART_SendString("\r\nHigh Rail Hits= ");
+    UART_SendDec(high_rail_hits);
+    UART_SendString("\r\nSignal Result = ");
+    UART_SendString(signal_result);
+    UART_SendString("\r\nRestore Input = ");
+    UART_SendString(
+        restored &&
+        (previous_input == ADC_INPUT_MICROPHONE_PA0) ?
+        "PA0" :
+        (restored ? "PA1" : "FAIL"));
+    UART_SendString("\r\nCommand Result= ");
+    UART_SendString(restored ? "PASS" : "FAIL");
+    UART_SendString("\r\nOverall Result= ");
+    UART_SendString(
+        restored && signal_valid ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void Console_RunAccelY(void)
+{
+    uint16_t samples[ACCELX_DIAGNOSTIC_SAMPLE_COUNT];
+    ADC_Input previous_input;
+    uint32_t sum = 0U;
+    uint64_t squared_sum = 0U;
+    uint32_t average;
+    uint32_t rms;
+    uint32_t low_rail_hits = 0U;
+    uint32_t high_rail_hits = 0U;
+    uint16_t minimum = 0x0FFFU;
+    uint16_t maximum = 0U;
+    const char *signal_result;
+    bool signal_valid;
+    bool restored;
+
+    UART_SendString("ADXL335 Y Diagnostic\r\n");
+    UART_SendString("--------------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("accelx blocked: recorder active\r\n");
+        return;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        UART_SendString("accelx blocked: analyzer active\r\n");
+        return;
+    }
+
+    previous_input = ADC_GetSelectedInput();
+
+    if (!ADC_SelectInput(ADC_INPUT_ACCEL_Y_PC5))
+    {
+        UART_SendString("accelx blocked: ADC capture path active\r\n");
+        return;
+    }
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        uint16_t sample = ADC_Read();
+        samples[index] = sample;
+        sum += sample;
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+
+        if (sample <= ACCELX_LOW_RAIL_THRESHOLD)
+        {
+            low_rail_hits++;
+        }
+
+        if (sample >= ACCELX_HIGH_RAIL_THRESHOLD)
+        {
+            high_rail_hits++;
+        }
+    }
+
+    average = (sum + (ACCELX_DIAGNOSTIC_SAMPLE_COUNT / 2U)) /
+              ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        int32_t centered = (int32_t)samples[index] - (int32_t)average;
+        squared_sum += (uint64_t)((int64_t)centered * centered);
+    }
+
+    rms = AccelX_IntegerSqrt(
+        squared_sum / ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+
+    signal_valid = true;
+    signal_result = "PASS";
+
+    if (low_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL LOW RAIL";
+    }
+    else if (high_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL HIGH RAIL";
+    }
+    else if (average < ACCELX_VALID_AVERAGE_MIN)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE LOW";
+    }
+    else if (average > ACCELX_VALID_AVERAGE_MAX)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE HIGH";
+    }
+
+    restored = ADC_SelectInput(previous_input);
+
+    UART_SendString("Input         = PC5\r\n");
+    UART_SendString("ADC Channel   = 15\r\n");
+    UART_SendString("Samples       = ");
+    UART_SendDec(ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+    UART_SendString("\r\nAverage       = ");
+    UART_SendDec(average);
+    UART_SendString("\r\nMinimum       = ");
+    UART_SendDec(minimum);
+    UART_SendString("\r\nMaximum       = ");
+    UART_SendDec(maximum);
+    UART_SendString("\r\nPeak-to-Peak  = ");
+    UART_SendDec((uint32_t)maximum - minimum);
+    UART_SendString("\r\nCentered RMS  = ");
+    UART_SendDec(rms);
+    UART_SendString("\r\nLow Rail Hits = ");
+    UART_SendDec(low_rail_hits);
+    UART_SendString("\r\nHigh Rail Hits= ");
+    UART_SendDec(high_rail_hits);
+    UART_SendString("\r\nSignal Result = ");
+    UART_SendString(signal_result);
+    UART_SendString("\r\nRestore Input = ");
+    UART_SendString(
+        restored &&
+        (previous_input == ADC_INPUT_MICROPHONE_PA0) ?
+        "PA0" :
+        (restored ? "PA1" : "FAIL"));
+    UART_SendString("\r\nCommand Result= ");
+    UART_SendString(restored ? "PASS" : "FAIL");
+    UART_SendString("\r\nOverall Result= ");
+    UART_SendString(
+        restored && signal_valid ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void Console_RunAccelZ(void)
+{
+    uint16_t samples[ACCELX_DIAGNOSTIC_SAMPLE_COUNT];
+    ADC_Input previous_input;
+    uint32_t sum = 0U;
+    uint64_t squared_sum = 0U;
+    uint32_t average;
+    uint32_t rms;
+    uint32_t low_rail_hits = 0U;
+    uint32_t high_rail_hits = 0U;
+    uint16_t minimum = 0x0FFFU;
+    uint16_t maximum = 0U;
+    const char *signal_result;
+    bool signal_valid;
+    bool restored;
+
+    UART_SendString("ADXL335 Z Diagnostic\r\n");
+    UART_SendString("--------------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("accelx blocked: recorder active\r\n");
+        return;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        UART_SendString("accelx blocked: analyzer active\r\n");
+        return;
+    }
+
+    previous_input = ADC_GetSelectedInput();
+
+    if (!ADC_SelectInput(ADC_INPUT_ACCEL_Z_PC4))
+    {
+        UART_SendString("accelx blocked: ADC capture path active\r\n");
+        return;
+    }
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        uint16_t sample = ADC_Read();
+        samples[index] = sample;
+        sum += sample;
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+
+        if (sample <= ACCELX_LOW_RAIL_THRESHOLD)
+        {
+            low_rail_hits++;
+        }
+
+        if (sample >= ACCELX_HIGH_RAIL_THRESHOLD)
+        {
+            high_rail_hits++;
+        }
+    }
+
+    average = (sum + (ACCELX_DIAGNOSTIC_SAMPLE_COUNT / 2U)) /
+              ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        int32_t centered = (int32_t)samples[index] - (int32_t)average;
+        squared_sum += (uint64_t)((int64_t)centered * centered);
+    }
+
+    rms = AccelX_IntegerSqrt(
+        squared_sum / ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+
+    signal_valid = true;
+    signal_result = "PASS";
+
+    if (low_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL LOW RAIL";
+    }
+    else if (high_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL HIGH RAIL";
+    }
+    else if (average < ACCELX_VALID_AVERAGE_MIN)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE LOW";
+    }
+    else if (average > ACCELX_VALID_AVERAGE_MAX)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE HIGH";
+    }
+
+    restored = ADC_SelectInput(previous_input);
+
+    UART_SendString("Input         = PC4\r\n");
+    UART_SendString("ADC Channel   = 14\r\n");
+    UART_SendString("Samples       = ");
+    UART_SendDec(ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+    UART_SendString("\r\nAverage       = ");
+    UART_SendDec(average);
+    UART_SendString("\r\nMinimum       = ");
+    UART_SendDec(minimum);
+    UART_SendString("\r\nMaximum       = ");
+    UART_SendDec(maximum);
+    UART_SendString("\r\nPeak-to-Peak  = ");
+    UART_SendDec((uint32_t)maximum - minimum);
+    UART_SendString("\r\nCentered RMS  = ");
+    UART_SendDec(rms);
+    UART_SendString("\r\nLow Rail Hits = ");
+    UART_SendDec(low_rail_hits);
+    UART_SendString("\r\nHigh Rail Hits= ");
+    UART_SendDec(high_rail_hits);
+    UART_SendString("\r\nSignal Result = ");
+    UART_SendString(signal_result);
+    UART_SendString("\r\nRestore Input = ");
+    UART_SendString(
+        restored &&
+        (previous_input == ADC_INPUT_MICROPHONE_PA0) ?
+        "PA0" :
+        (restored ? "PA1" : "FAIL"));
+    UART_SendString("\r\nCommand Result= ");
+    UART_SendString(restored ? "PASS" : "FAIL");
+    UART_SendString("\r\nOverall Result= ");
+    UART_SendString(
+        restored && signal_valid ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void Console_RunAccelPC1(void)
+{
+    uint16_t samples[ACCELX_DIAGNOSTIC_SAMPLE_COUNT];
+    ADC_Input previous_input;
+    uint32_t sum = 0U;
+    uint64_t squared_sum = 0U;
+    uint32_t average;
+    uint32_t rms;
+    uint32_t low_rail_hits = 0U;
+    uint32_t high_rail_hits = 0U;
+    uint16_t minimum = 0x0FFFU;
+    uint16_t maximum = 0U;
+    const char *signal_result;
+    bool signal_valid;
+    bool restored;
+
+    UART_SendString("ADC PC1 Diagnostic\r\n");
+    UART_SendString("--------------------\r\n");
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("accelx blocked: recorder active\r\n");
+        return;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        UART_SendString("accelx blocked: analyzer active\r\n");
+        return;
+    }
+
+    previous_input = ADC_GetSelectedInput();
+
+    if (!ADC_SelectInput(ADC_INPUT_ACCEL_X_PC1))
+    {
+        UART_SendString("accelx blocked: ADC capture path active\r\n");
+        return;
+    }
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        uint16_t sample = ADC_Read();
+        samples[index] = sample;
+        sum += sample;
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+
+        if (sample <= ACCELX_LOW_RAIL_THRESHOLD)
+        {
+            low_rail_hits++;
+        }
+
+        if (sample >= ACCELX_HIGH_RAIL_THRESHOLD)
+        {
+            high_rail_hits++;
+        }
+    }
+
+    average = (sum + (ACCELX_DIAGNOSTIC_SAMPLE_COUNT / 2U)) /
+              ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+
+    for (uint32_t index = 0U;
+         index < ACCELX_DIAGNOSTIC_SAMPLE_COUNT;
+         index++)
+    {
+        int32_t centered = (int32_t)samples[index] - (int32_t)average;
+        squared_sum += (uint64_t)((int64_t)centered * centered);
+    }
+
+    rms = AccelX_IntegerSqrt(
+        squared_sum / ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+
+    signal_valid = true;
+    signal_result = "PASS";
+
+    if (low_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL LOW RAIL";
+    }
+    else if (high_rail_hits > ACCELX_MAX_ALLOWED_RAIL_HITS)
+    {
+        signal_valid = false;
+        signal_result = "FAIL HIGH RAIL";
+    }
+    else if (average < ACCELX_VALID_AVERAGE_MIN)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE LOW";
+    }
+    else if (average > ACCELX_VALID_AVERAGE_MAX)
+    {
+        signal_valid = false;
+        signal_result = "FAIL AVERAGE HIGH";
+    }
+
+    restored = ADC_SelectInput(previous_input);
+
+    UART_SendString("Input         = PC1\r\n");
+    UART_SendString("ADC Channel   = 11\r\n");
+    UART_SendString("Samples       = ");
+    UART_SendDec(ACCELX_DIAGNOSTIC_SAMPLE_COUNT);
+    UART_SendString("\r\nAverage       = ");
+    UART_SendDec(average);
+    UART_SendString("\r\nMinimum       = ");
+    UART_SendDec(minimum);
+    UART_SendString("\r\nMaximum       = ");
+    UART_SendDec(maximum);
+    UART_SendString("\r\nPeak-to-Peak  = ");
+    UART_SendDec((uint32_t)maximum - minimum);
+    UART_SendString("\r\nCentered RMS  = ");
+    UART_SendDec(rms);
+    UART_SendString("\r\nLow Rail Hits = ");
+    UART_SendDec(low_rail_hits);
+    UART_SendString("\r\nHigh Rail Hits= ");
+    UART_SendDec(high_rail_hits);
+    UART_SendString("\r\nSignal Result = ");
+    UART_SendString(signal_result);
+    UART_SendString("\r\nRestore Input = ");
+    UART_SendString(
+        restored &&
+        (previous_input == ADC_INPUT_MICROPHONE_PA0) ?
+        "PA0" :
+        (restored ? "PA1" : "FAIL"));
+    UART_SendString("\r\nCommand Result= ");
+    UART_SendString(restored ? "PASS" : "FAIL");
+    UART_SendString("\r\nOverall Result= ");
+    UART_SendString(
+        restored && signal_valid ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void Console_RunAccelFFT(void)
+{
+    ADC_Input previous_input;
+    bool restored;
+    uint16_t accel_minimum;
+    uint16_t accel_maximum;
+    uint32_t accel_low_rail_hits;
+    uint32_t accel_high_rail_hits;
+    uint32_t accel_peak_to_peak;
+    bool accel_signal_valid;
+
+    previous_input = ADC_GetSelectedInput();
+
+    if (!ADC_SelectInput(ADC_INPUT_ACCEL_X_PC1))
+    {
+        UART_SendString("ACCELFFT: Failed to select PC1\r\n");
+        return;
+    }
+
+    UART_SendString("ACCELFFT: Capture source = PC1\r\n");
+
+    /* Reuse the existing TIM2-triggered DMA capture routine. */
+    Console_RunDmaCapture();
+
+    if (captureComplete <= 0)
+    {
+        UART_SendString("ACCELFFT: Capture failed; FFT aborted\r\n");
+        restored = ADC_SelectInput(previous_input);
+        UART_SendString("ACCELFFT: Restore input = ");
+        UART_SendString(restored ? "PASS\r\n" : "FAIL\r\n");
+        return;
+    }
+
+    accel_minimum = 4095U;
+    accel_maximum = 0U;
+    accel_low_rail_hits = 0U;
+    accel_high_rail_hits = 0U;
+
+    for (uint32_t index = 0U; index < sampleCount; index++)
+    {
+        uint16_t sample = sampleBuffer[index];
+
+        if (sample < accel_minimum)
+        {
+            accel_minimum = sample;
+        }
+
+        if (sample > accel_maximum)
+        {
+            accel_maximum = sample;
+        }
+
+        if (sample <= 16U)
+        {
+            accel_low_rail_hits++;
+        }
+
+        if (sample >= 4079U)
+        {
+            accel_high_rail_hits++;
+        }
+    }
+
+    accel_peak_to_peak =
+        (uint32_t)accel_maximum - accel_minimum;
+
+    accel_signal_valid =
+        (sampleCount != 0U) &&
+        (accel_low_rail_hits == 0U) &&
+        (accel_high_rail_hits == 0U) &&
+        (accel_peak_to_peak >= 8U);
+
+    UART_SendString("ACCELFFT: Signal validity = " );
+
+    if (sampleCount == 0U)
+    {
+        UART_SendString("FAIL NO SAMPLES\r\n");
+    }
+    else if (accel_low_rail_hits != 0U)
+    {
+        UART_SendString("FAIL LOW RAIL\r\n");
+    }
+    else if (accel_high_rail_hits != 0U)
+    {
+        UART_SendString("FAIL HIGH RAIL\r\n");
+    }
+    else if (accel_peak_to_peak < 8U)
+    {
+        UART_SendString("FAIL LOW AMPLITUDE\r\n");
+    }
+    else
+    {
+        UART_SendString("PASS\r\n");
+    }
+
+    UART_SendString("ACCELFFT: Minimum = " );
+    UART_SendDec(accel_minimum);
+    UART_SendString("\r\nACCELFFT: Maximum = " );
+    UART_SendDec(accel_maximum);
+    UART_SendString("\r\nACCELFFT: Peak-to-peak = " );
+    UART_SendDec(accel_peak_to_peak);
+    UART_SendString("\r\n");
+
+    if (!accel_signal_valid)
+    {
+        UART_SendString(
+            "ACCELFFT: Peak frequency is not meaningful\r\n");
+    }
+
+    if (!FFT_Process())
+    {
+        UART_SendString("ACCELFFT: FFT failed\r\n");
+    }
+    else
+    {
+        uint32_t bin_width_millihz = FFT_GetBinWidthMilliHz();
+        uint32_t peak_bin = FFT_GetPeakBin();
+
+        UART_SendString("ACCELFFT: FFT complete\r\n");
+        UART_SendString("FFT size = ");
+        UART_SendDec(FFT_GetSize());
+        UART_SendString("\r\nSample rate = ");
+        UART_SendDec(FFT_GetSampleRate());
+        UART_SendString(" SPS\r\nBin width = ");
+        UART_SendDec(bin_width_millihz / 1000U);
+        UART_SendChar('.');
+        UART_SendDec(bin_width_millihz % 1000U);
+        UART_SendString(" Hz\r\nDC level = ");
+        UART_SendDec(FFT_GetDC());
+        UART_SendString("\r\nRMS = ");
+        UART_SendDec(FFT_GetRMS());
+        UART_SendString("\r\nPeak bin = ");
+        UART_SendDec(peak_bin);
+        UART_SendString("\r\nPeak frequency = ");
+        UART_SendDec(FFT_GetPeakFrequency());
+        UART_SendString(" Hz\r\nPeak magnitude = ");
+        UART_SendDec(FFT_GetMagnitude(peak_bin));
+        UART_SendString("\r\n");
+
+        Spectrum_Draw();
+        UART_SendString("ACCELFFT: Spectrum drawn\r\n");
+    }
+
+    restored = ADC_SelectInput(previous_input);
+    UART_SendString("ACCELFFT: Restore input = ");
+    UART_SendString(restored ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static bool Console_AccelSelfTestReadSample(uint16_t *sample)
+{
+    uint32_t deadline;
+
+    if (sample == NULL)
+    {
+        return false;
+    }
+
+    ADC_UseSoftwareTrigger();
+    ADC1->SR &= ~(ADC_SR_EOC | ADC_SR_STRT | ADC_SR_OVR);
+    ADC1->CR2 |= ADC_CR2_SWSTART;
+
+    deadline = HAL_GetTick() + ACCELST_ADC_TIMEOUT_MS;
+
+    while ((ADC1->SR & ADC_SR_EOC) == 0U)
+    {
+        if ((int32_t)(HAL_GetTick() - deadline) >= 0)
+        {
+            return false;
+        }
+    }
+
+    *sample = (uint16_t)ADC1->DR;
+    return true;
+}
+
+static bool Console_AccelSelfTestCaptureAxis(
+    ADC_Input input,
+    AccelSelfTestCapture *capture)
+{
+    uint32_t index;
+    uint32_t sum;
+    uint16_t sample;
+    uint16_t minimum;
+    uint16_t maximum;
+
+    if (capture == NULL)
+    {
+        return false;
+    }
+
+    if (!ADC_SelectInput(input))
+    {
+        return false;
+    }
+
+    for (index = 0U; index < ACCELST_DISCARD_COUNT; index++)
+    {
+        if (!Console_AccelSelfTestReadSample(&sample))
+        {
+            return false;
+        }
+    }
+
+    sum = 0U;
+    minimum = 4095U;
+    maximum = 0U;
+
+    for (index = 0U; index < ACCELST_SAMPLE_COUNT; index++)
+    {
+        if (!Console_AccelSelfTestReadSample(&sample))
+        {
+            return false;
+        }
+
+        sum += sample;
+
+        if (sample < minimum)
+        {
+            minimum = sample;
+        }
+
+        if (sample > maximum)
+        {
+            maximum = sample;
+        }
+    }
+
+    capture->average = sum / ACCELST_SAMPLE_COUNT;
+    capture->minimum = minimum;
+    capture->maximum = maximum;
+    capture->peak_to_peak = (uint32_t)maximum - minimum;
+
+    return true;
+}
+
+static void Console_SendSignedDec(int32_t value)
+{
+    uint32_t magnitude;
+
+    if (value < 0)
+    {
+        UART_SendChar('-');
+        magnitude = (uint32_t)(-(value + 1)) + 1U;
+    }
+    else
+    {
+        UART_SendChar('+');
+        magnitude = (uint32_t)value;
+    }
+
+    UART_SendDec(magnitude);
+}
+
+static void Console_PrintAccelSelfTestAxis(
+    const char *axis_name,
+    const AccelSelfTestAxisResult *result)
+{
+    UART_SendString(axis_name);
+    UART_SendString(" Baseline      = ");
+    UART_SendDec(result->baseline.average);
+    UART_SendString("\r\n");
+
+    UART_SendString(axis_name);
+    UART_SendString(" Active        = ");
+    UART_SendDec(result->active.average);
+    UART_SendString("\r\n");
+
+    UART_SendString(axis_name);
+    UART_SendString(" Delta         = ");
+    Console_SendSignedDec(result->delta);
+    UART_SendString(" counts\r\n");
+
+    UART_SendString(axis_name);
+    UART_SendString(" Base P-P      = ");
+    UART_SendDec(result->baseline.peak_to_peak);
+    UART_SendString("\r\n");
+
+    UART_SendString(axis_name);
+    UART_SendString(" Active P-P    = ");
+    UART_SendDec(result->active.peak_to_peak);
+    UART_SendString("\r\n");
+
+    UART_SendString(axis_name);
+    UART_SendString(" Result        = ");
+    UART_SendString(result->result ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void Console_RunAccelSelfTest(void)
+{
+    ADC_Input previous_input;
+    AccelSelfTestAxisResult x = {0};
+    AccelSelfTestAxisResult y = {0};
+    AccelSelfTestAxisResult z = {0};
+    bool capture_ok = true;
+    bool restored;
+    bool motion_ok;
+    bool overall_result;
+
+    previous_input = ADC_GetSelectedInput();
+
+    UART_SendString(
+        "\r\nADXL335 Self-Test\r\n"
+        "-----------------\r\n"
+        "Keep sensor stationary during test.\r\n");
+
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6, GPIO_PIN_RESET);
+    HAL_Delay(ACCELST_SETTLE_TIME_MS);
+
+    UART_SendString("Capturing ST LOW baseline...\r\n");
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_X_PC1, &x.baseline))
+    {
+        UART_SendString("Baseline X capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_Y_PC5, &y.baseline))
+    {
+        UART_SendString("Baseline Y capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_Z_PC4, &z.baseline))
+    {
+        UART_SendString("Baseline Z capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_Delay(ACCELST_SETTLE_TIME_MS);
+
+    UART_SendString("Capturing ST HIGH response...\r\n");
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_X_PC1, &x.active))
+    {
+        UART_SendString("Active X capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_Y_PC5, &y.active))
+    {
+        UART_SendString("Active Y capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+    if (!Console_AccelSelfTestCaptureAxis(
+            ADC_INPUT_ACCEL_Z_PC4, &z.active))
+    {
+        UART_SendString("Active Z capture failed\r\n");
+        capture_ok = false;
+        goto cleanup;
+    }
+
+cleanup:
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6, GPIO_PIN_RESET);
+    HAL_Delay(ACCELST_SETTLE_TIME_MS);
+    restored = ADC_SelectInput(previous_input);
+
+    if (!capture_ok)
+    {
+        UART_SendString("ST Restore      = LOW\r\n");
+        UART_SendString("ADC Restore     = ");
+        UART_SendString(restored ? "PASS\r\n" : "FAIL\r\n");
+        UART_SendString("Overall Result  = FAIL\r\n");
+        return;
+    }
+
+    x.delta = (int32_t)x.active.average - (int32_t)x.baseline.average;
+    y.delta = (int32_t)y.active.average - (int32_t)y.baseline.average;
+    z.delta = (int32_t)z.active.average - (int32_t)z.baseline.average;
+
+    motion_ok =
+        (x.baseline.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P) &&
+        (x.active.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P) &&
+        (y.baseline.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P) &&
+        (y.active.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P) &&
+        (z.baseline.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P) &&
+        (z.active.peak_to_peak <= ACCELST_MAX_CAPTURE_P2P);
+
+    x.result =
+        motion_ok &&
+        (x.delta >= ACCELST_X_DELTA_MIN) &&
+        (x.delta <= ACCELST_X_DELTA_MAX);
+
+    y.result =
+        motion_ok &&
+        (y.delta >= ACCELST_Y_DELTA_MIN) &&
+        (y.delta <= ACCELST_Y_DELTA_MAX);
+
+    z.result =
+        motion_ok &&
+        (z.delta >= ACCELST_Z_DELTA_MIN) &&
+        (z.delta <= ACCELST_Z_DELTA_MAX);
+
+    overall_result =
+        restored && motion_ok && x.result && y.result && z.result;
+
+    UART_SendString("\r\n");
+    Console_PrintAccelSelfTestAxis("X", &x);
+    UART_SendString("\r\n");
+    Console_PrintAccelSelfTestAxis("Y", &y);
+    UART_SendString("\r\n");
+    Console_PrintAccelSelfTestAxis("Z", &z);
+    UART_SendString("\r\n");
+
+    UART_SendString("Motion Check    = ");
+    UART_SendString(
+        motion_ok ? "PASS\r\n" : "FAIL - SENSOR MOVED\r\n");
+    UART_SendString("ST Restore      = LOW\r\n");
+    UART_SendString("ADC Restore     = ");
+    UART_SendString(restored ? "PASS\r\n" : "FAIL\r\n");
+    UART_SendString("Overall Result  = ");
+    UART_SendString(overall_result ? "PASS\r\n" : "FAIL\r\n");
+}
+
 static void Console_ProcessCommand(char *command)
 {
     if (strcmp(command, "help") == 0)
@@ -1249,6 +2562,59 @@ else if (strcmp(command, "sdread0") == 0)
     {
         Console_RunRecStatus();
     }
+    else if (strcmp(command, "accelx") == 0)
+    {
+        Console_RunAccelX();
+    }
+    else if (strcmp(command, "accely") == 0)
+    {
+        Console_RunAccelY();
+    }
+    else if (strcmp(command, "accelz") == 0)
+    {
+        Console_RunAccelZ();
+    }
+    else if (strcmp(command, "accelst") == 0)
+    {
+        if (Analyzer_RequireStopped())
+        {
+            Console_RunAccelSelfTest();
+        }
+    }
+    else if (strcmp(command, "pf6high") == 0)
+    {
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6, GPIO_PIN_SET);
+        UART_SendString("PF6 set HIGH - ST MUST BE DISCONNECTED\r\n");
+    }
+    else if (strcmp(command, "pf6low") == 0)
+    {
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6, GPIO_PIN_RESET);
+        UART_SendString("PF6 set LOW\r\n");
+    }
+    else if (strcmp(command, "accelpc1") == 0)
+    {
+        Console_RunAccelPC1();
+    }
+    else if (strcmp(command, "savexyztime") == 0)
+    {
+        Console_RunSaveXYZTime();
+    }
+    else if (strcmp(command, "savexyzfft") == 0)
+    {
+        Console_RunSaveXYZFft();
+    }
+    else if (strcmp(command, "savexyzboth") == 0)
+    {
+        Console_RunSaveXYZBoth();
+    }
+    else if (strcmp(command, "accelxyz") == 0)
+    {
+        Console_RunAccelXYZ();
+    }
+    else if (strcmp(command, "accelfft") == 0)
+    {
+        Console_RunAccelFFT();
+    }
     else if (strcmp(command, "fftexport") == 0)
     {
         Console_RunFftExport();
@@ -1267,6 +2633,26 @@ else if (strcmp(command, "sdread0") == 0)
         {
             Console_RunFsUnmount();
         }
+    }    else if (strcmp(command, "accelui") == 0)
+    {
+        Console_RunAccelUi();
+    }
+
+    else if (strcmp(command, "accelrun") == 0)
+    {
+        Console_RunAccelRun();
+    }
+    else if (strcmp(command, "accelstop") == 0)
+    {
+        Console_RunAccelStop();
+    }
+    else if (strcmp(command, "accelpreset") == 0)
+    {
+        Console_RunAccelPreset();
+    }
+    else if (strcmp(command, "audiopreset") == 0)
+    {
+        Console_RunAudioPreset();
     }
     else if (strcmp(command, "fft256") == 0)
 {
@@ -1770,6 +3156,11 @@ static void Console_PrintHelp(void)
         "recstart    - Start WAV recorder\r\n"
         "recstop     - Stop and finalize WAV recorder\r\n"
         "recstatus   - Show WAV recorder status\r\n"
+        "accelui     - Open touch vibration screen\r\n"
+        "accelrun    - Start live X-axis vibration TFT\r\n"
+        "accelstop   - Stop live vibration TFT and restore ADC\r\n"
+        "accelpreset - 2048 SPS, 2048-point vibration FFT\r\n"
+        "audiopreset - Restore 48000 SPS audio FFT preset\r\n"
         "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
         "fft1024     - Set capture and FFT size to 1024\r\n"
@@ -1798,6 +3189,17 @@ static void Console_PrintHelp(void)
         "corners     - Draw touch calibration corners\r\n"
 	"ltdcstat    - Check LTDC error flags\r\n"
         "touch       - Read calibrated touch coordinates\r\n"
+	"accelx      - ADXL335 X diagnostic on PC1\r\n"
+	"accely      - ADXL335 Y diagnostic on PC5\r\n"
+	"accelz      - ADXL335 Z diagnostic on PC4\r\n"
+	"accelst     - Run ADXL335 three-axis self-test\r\n"
+	"pf6high    - Set PF6 high for meter test only\r\n"
+	"pf6low     - Return PF6 low\r\n"
+	"accelpc1   - Test PC1 on ADC1 channel 11\r\n"
+        "savexyztime - Save latest XYZ time CSV\r\n"
+        "savexyzfft  - Save latest XYZ spectrum CSV\r\n"
+        "savexyzboth - Save both latest XYZ CSV files\r\n"
+	"accelfft   - Capture PC1 and run FFT\r\n"
         "gridtest    - Draw display geometry test\r\n");
 }
 
@@ -3030,11 +4432,37 @@ static void Console_RunSdBenchmark(void)
 static void Console_RunDmaCapture(void)
 {
     uint32_t deadline;
+    uint32_t rate_hz;
+    uint32_t count;
+    uint32_t expected_ms;
+    uint32_t timeout_ms;
 
     UART_SendString("Starting DMA capture...\r\n");
     DMA_CaptureSamples();
 
-    deadline = HAL_GetTick() + DMA_TIMEOUT_MS;
+    rate_hz = Capture_GetSampleRate();
+    count = Capture_GetSampleCount();
+
+    if (rate_hz == 0U)
+    {
+        expected_ms = DMA_TIMEOUT_MS;
+    }
+    else
+    {
+        /* Rounded-up capture duration in milliseconds. */
+        expected_ms = (uint32_t)(
+            (((uint64_t)count * 1000U) + rate_hz - 1U) /
+            rate_hz);
+    }
+
+    timeout_ms = expected_ms + DMA_TIMEOUT_MARGIN_MS;
+
+    if (timeout_ms < DMA_TIMEOUT_MS)
+    {
+        timeout_ms = DMA_TIMEOUT_MS;
+    }
+
+    deadline = HAL_GetTick() + timeout_ms;
 
     while (captureComplete == 0)
     {
@@ -5315,7 +6743,73 @@ static void UI_ProcessRecorderActions(void)
                 UI_ShowRecorder();
             }
             break;
+        }        case UI_ACTION_ACCEL_START:
+            if (!accelrun_active) Console_RunAccelRun();
+            break;
+        case UI_ACTION_ACCEL_STOP:
+            if (accelrun_active) Console_RunAccelStop();
+            break;
+        case UI_ACTION_ACCEL_X:
+        case UI_ACTION_ACCEL_Y:
+        case UI_ACTION_ACCEL_Z:
+        {
+            uint32_t axis = (action == UI_ACTION_ACCEL_X) ? 0U :
+                            (action == UI_ACTION_ACCEL_Y) ? 1U : 2U;
+            if (accelrun_active && accelrun_xyz_mode)
+            {
+                accelrun_xyz_view_axis = axis;
+                if (AccelXYZ_LoadView(axis)) UI_NotifySpectrumChanged();
+                UI_SetAccelXYZSummary(true, accelrun_frame_count, axis,
+                    accelrun_xyz_rms, accelrun_xyz_peak_hz, accelrun_xyz_peak_mag,
+                    accelrun_xyz_clip, accelrun_xyz_vector_rms, accelrun_xyz_dominant_axis);
+            }
+            else if (!accelrun_active)
+            {
+                if(axis==0U) Console_SelectAccelAxis(ADC_INPUT_ACCEL_X_PC1,"X",0U);
+                else if(axis==1U) Console_SelectAccelAxis(ADC_INPUT_ACCEL_Y_PC5,"Y",1U);
+                else Console_SelectAccelAxis(ADC_INPUT_ACCEL_Z_PC4,"Z",2U);
+            }
+            break;
         }
+        case UI_ACTION_ACCEL_XYZ:
+            if (!accelrun_active)
+            {
+                if (UI_GetAccelSource() == 3U)
+                {
+                    UI_ShowXYZSavePage();
+                    UART_SendString("XYZ SAVE page\r\n");
+                }
+                else
+                {
+                    accelrun_xyz_view_axis = 0U;
+                    UI_SetAccelSource(3U);
+                    UART_SendString("ACCEL source = XYZ\r\n");
+                }
+            }
+            break;
+        case UI_ACTION_XYZ_SAVE_BACK:
+            UI_HideXYZSavePage();
+            break;
+        case UI_ACTION_XYZ_SAVE_TIME:
+            UI_SetXYZSaveMessage("SAVING TIME...");
+            Console_RunSaveXYZTime();
+            UI_SetXYZSaveMessage("TIME DONE - UART");
+            break;
+        case UI_ACTION_XYZ_SAVE_FFT:
+            UI_SetXYZSaveMessage("SAVING FFT...");
+            Console_RunSaveXYZFft();
+            UI_SetXYZSaveMessage("FFT DONE - UART");
+            break;
+        case UI_ACTION_XYZ_SAVE_BOTH:
+            UI_SetXYZSaveMessage("SAVING BOTH...");
+            Console_RunSaveXYZBoth();
+            UI_SetXYZSaveMessage("BOTH DONE - UART");
+            break;
+        case UI_ACTION_XYZ_SAVE_FILES:
+            UI_HideXYZSavePage();
+            UI_ShowFileBrowser();
+            break;
+
 
         case UI_ACTION_NONE:
         default:
@@ -5385,6 +6879,87 @@ static bool Analyzer_RequireStopped(void)
 
     return true;
 }
+static bool Analyzer_SetPreset(
+    uint32_t requested_rate_hz,
+    uint32_t fft_size,
+    const char *name)
+{
+    uint32_t previous_rate_hz;
+    uint32_t previous_capture_count;
+    uint32_t previous_fft_size;
+    uint32_t configured_rate_hz;
+
+    if (!Analyzer_RequireStopped())
+    {
+        return false;
+    }
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Stop WAV recorder before changing preset\r\n");
+        return false;
+    }
+
+    previous_rate_hz = Capture_GetSampleRate();
+    previous_capture_count = Capture_GetSampleCount();
+    previous_fft_size = FFT_GetSize();
+
+    if (!Capture_SetSampleRate(requested_rate_hz))
+    {
+        UART_SendString("Capture rate change failed\r\n");
+        return false;
+    }
+
+    if (!Analyzer_SetFFTSize(fft_size))
+    {
+        (void)Capture_SetSampleRate(previous_rate_hz);
+        (void)Capture_SetSampleCount(previous_capture_count);
+        (void)FFT_SetSize(previous_fft_size);
+        sampleCount = 0U;
+        captureComplete = 1;
+        FFT_Invalidate();
+        UI_OnFFTConfigurationChanged();
+        UART_SendString("Preset rollback completed\r\n");
+        return false;
+    }
+
+    configured_rate_hz = Capture_GetSampleRate();
+
+    UART_SendString(name);
+    UART_SendString(" preset selected\r\n");
+    UART_SendString("Requested Rate  = ");
+    UART_SendDec(requested_rate_hz);
+    UART_SendString(" SPS\r\n");
+    UART_SendString("Configured Rate = ");
+    UART_SendDec(configured_rate_hz);
+    UART_SendString(" SPS\r\n");
+
+    if ((configured_rate_hz + 1U < requested_rate_hz) ||
+        (configured_rate_hz > requested_rate_hz + 1U))
+    {
+        UART_SendString("Warning: timer rate differs from request\r\n");
+    }
+
+    Console_PrintAnalyzerConfig();
+    return true;
+}
+
+static void Console_RunAccelPreset(void)
+{
+    (void)Analyzer_SetPreset(
+        ACCEL_PRESET_RATE_HZ,
+        ACCEL_PRESET_FFT_SIZE,
+        "Accelerometer FFT");
+}
+
+static void Console_RunAudioPreset(void)
+{
+    (void)Analyzer_SetPreset(
+        AUDIO_PRESET_RATE_HZ,
+        AUDIO_PRESET_FFT_SIZE,
+        "Audio FFT");
+}
+
 static bool Analyzer_SetFFTSize(uint32_t fft_size)
 {
     uint32_t previous_capture_count;
@@ -5434,8 +7009,290 @@ static bool Analyzer_SetFFTSize(uint32_t fft_size)
     return true;
 }
 
+static void AccelRun_Finish(const char *reason)
+{
+    bool restored;
+    accelrun_active = false;
+    accelrun_stop_requested = false;
+    accelrun_state = ACCELRUN_IDLE;
+    restored = ADC_SelectInput(accelrun_previous_input);
+    if (accelrun_xyz_mode)
+        UI_SetAccelXYZSummary(false, accelrun_frame_count, accelrun_xyz_view_axis,
+            accelrun_xyz_rms, accelrun_xyz_peak_hz, accelrun_xyz_peak_mag,
+            accelrun_xyz_clip, accelrun_xyz_vector_rms, accelrun_xyz_dominant_axis);
+    else
+        UI_SetAccelLiveStatus(false, accelrun_frame_count,
+            FFT_IsValid()?FFT_GetPeakFrequency():0U,
+            FFT_IsValid()?FFT_GetMagnitude(FFT_GetPeakBin()):0U,
+            FFT_IsValid()?FFT_GetRMS():0U);
+    UART_SendString("ACCELRUN: "); UART_SendString(reason);
+    UART_SendString("\r\nFrames = "); UART_SendDec(accelrun_frame_count);
+    UART_SendString("\r\nErrors = "); UART_SendDec(accelrun_error_count);
+    UART_SendString("\r\nADC Restore = ");
+    UART_SendString(restored ? "PASS\r\n" : "FAIL\r\n");
+}
+
+static void AccelRun_Process(void)
+{
+    uint32_t timeout_ms;
+    if (!accelrun_active) return;
+    switch (accelrun_state)
+    {
+        case ACCELRUN_START_CAPTURE:
+            if (accelrun_stop_requested) { AccelRun_Finish("stopped"); return; }
+            if (accelrun_xyz_mode) DMA_CaptureXYZSamples(); else DMA_CaptureSamples();
+            timeout_ms = 1700U;
+            accelrun_deadline_ms = HAL_GetTick() + timeout_ms;
+            accelrun_state = ACCELRUN_WAIT_CAPTURE;
+            break;
+        case ACCELRUN_WAIT_CAPTURE:
+            if (captureComplete == 0)
+            {
+                if ((int32_t)(HAL_GetTick()-accelrun_deadline_ms)>=0)
+                { accelrun_error_count++; AccelRun_Finish("DMA timeout"); }
+                return;
+            }
+            if (captureComplete < 0)
+            { accelrun_error_count++; AccelRun_Finish("DMA error"); return; }
+            if (accelrun_stop_requested) { AccelRun_Finish("stopped"); return; }
+            if (accelrun_xyz_mode)
+            {
+                if (!AccelXYZ_ProcessFrame())
+                { accelrun_error_count++; AccelRun_Finish("XYZ FFT error"); return; }
+                accelrun_frame_count++;
+                UI_SetAccelXYZSummary(true, accelrun_frame_count, accelrun_xyz_view_axis,
+                    accelrun_xyz_rms, accelrun_xyz_peak_hz, accelrun_xyz_peak_mag,
+                    accelrun_xyz_clip, accelrun_xyz_vector_rms, accelrun_xyz_dominant_axis);
+            }
+            else
+            {
+                if (!FFT_Process())
+                { accelrun_error_count++; AccelRun_Finish("FFT error"); return; }
+                accelrun_frame_count++;
+                UI_SetAccelLiveStatus(true, accelrun_frame_count,
+                    FFT_GetPeakFrequency(),FFT_GetMagnitude(FFT_GetPeakBin()),FFT_GetRMS());
+            }
+            UI_NotifySpectrumChanged();
+            accelrun_state=ACCELRUN_START_CAPTURE;
+            break;
+        default: accelrun_error_count++; AccelRun_Finish("state error"); break;
+    }
+}
+
+static void Console_RunAccelXYZ(void)
+{
+    uint32_t deadline;
+    uint32_t axis;
+    uint32_t i;
+    uint32_t sums[3] = {0U, 0U, 0U};
+    uint64_t squares[3] = {0U, 0U, 0U};
+    uint32_t dc[3];
+    uint32_t rms[3];
+    uint32_t peak_hz[3];
+    uint32_t peak_mag[3];
+    uint16_t minimum[3] = {4095U, 4095U, 4095U};
+    uint16_t maximum[3] = {0U, 0U, 0U};
+    const char *axis_name[3] = {"X", "Y", "Z"};
+
+    if (!Analyzer_RequireStopped() || Capture_IsRecorderActive())
+    {
+        UART_SendString("ACCELXYZ blocked: analyzer or recorder active\r\n");
+        return;
+    }
+    Console_RunAccelPreset();
+    UART_SendString("ACCELXYZ: starting aligned X/Y/Z capture\r\n");
+    DMA_CaptureXYZSamples();
+    deadline = HAL_GetTick() + 1700U;
+    while (captureComplete == 0)
+    {
+        if ((int32_t)(HAL_GetTick() - deadline) >= 0)
+        {
+            UART_SendString("ACCELXYZ: DMA timeout\r\n");
+            return;
+        }
+    }
+    if ((captureComplete < 0) || (xyzFrameCount != CAPTURE_XYZ_FRAME_COUNT))
+    {
+        UART_SendString("ACCELXYZ: capture failed\r\n");
+        return;
+    }
+
+    for (i = 0U; i < xyzFrameCount; i++)
+    {
+        for (axis = 0U; axis < 3U; axis++)
+        {
+            uint16_t value = xyzSampleBuffer[(i * 3U) + axis];
+            sums[axis] += value;
+            if (value < minimum[axis]) minimum[axis] = value;
+            if (value > maximum[axis]) maximum[axis] = value;
+        }
+    }
+    for (axis = 0U; axis < 3U; axis++) dc[axis] = sums[axis] / xyzFrameCount;
+    for (i = 0U; i < xyzFrameCount; i++)
+    {
+        for (axis = 0U; axis < 3U; axis++)
+        {
+            int32_t centered = (int32_t)xyzSampleBuffer[(i * 3U) + axis] - (int32_t)dc[axis];
+            squares[axis] += (uint64_t)((int64_t)centered * centered);
+        }
+    }
+
+    for (axis = 0U; axis < 3U; axis++)
+    {
+        rms[axis] = AccelX_IntegerSqrt(squares[axis] / xyzFrameCount);
+        for (i = 0U; i < xyzFrameCount; i++)
+            sampleBuffer[i] = xyzSampleBuffer[(i * 3U) + axis];
+        sampleCount = xyzFrameCount;
+        sampleRate = Capture_GetSampleRate();
+        if (!FFT_Process())
+        {
+            UART_SendString("ACCELXYZ: FFT failed\r\n");
+            return;
+        }
+        peak_hz[axis] = FFT_GetPeakFrequency();
+        peak_mag[axis] = FFT_GetMagnitude(FFT_GetPeakBin());
+    }
+
+    UART_SendString("ACCELXYZ Results\r\n----------------\r\n");
+    for (axis = 0U; axis < 3U; axis++)
+    {
+        UART_SendString(axis_name[axis]);
+        UART_SendString(" DC="); UART_SendDec(dc[axis]);
+        UART_SendString(" MIN="); UART_SendDec(minimum[axis]);
+        UART_SendString(" MAX="); UART_SendDec(maximum[axis]);
+        UART_SendString(" P-P="); UART_SendDec((uint32_t)maximum[axis] - minimum[axis]);
+        UART_SendString(" RMS="); UART_SendDec(rms[axis]);
+        UART_SendString(" PEAK="); UART_SendDec(peak_hz[axis]);
+        UART_SendString(" Hz MAG="); UART_SendDec(peak_mag[axis]);
+        UART_SendString("\r\n");
+    }
+    UART_SendString("XYZ Frames = "); UART_SendDec(xyzFrameCount);
+    UART_SendString("\r\nFrame Rate = "); UART_SendDec(Capture_GetSampleRate());
+    UART_SendString(" SPS\r\nADC Values = "); UART_SendDec(CAPTURE_XYZ_VALUE_COUNT);
+    UART_SendString("\r\nACCELXYZ: PASS\r\n");
+}
+
+static void Console_RunAccelUi(void)
+{
+    if (accelrun_active)
+    {
+        UART_SendString("Stop accelrun before accelui\r\n");
+        return;
+    }
+    Console_RunAccelPreset();
+    if ((Capture_GetSampleCount() == 2048U) &&
+        (FFT_GetSize() == 2048U) &&
+        (Capture_GetSampleRate() >= 2046U) &&
+        (Capture_GetSampleRate() <= 2049U))
+    {
+        UI_ShowAccelLive();
+        accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
+        accelrun_axis_name = "X";
+        accelrun_xyz_mode = false;
+        accelrun_xyz_view_axis = 0U;
+        UI_SetAccelSource(0U);
+        UI_SetAccelLiveStatus(false, 0U, 0U, 0U, 0U);
+        UART_SendString("ACCEL UI: touch START\r\n");
+    }
+}
+
+static void Console_SelectAccelAxis(ADC_Input input,
+                                    const char *name,
+                                    uint32_t ui_source)
+{
+    if (accelrun_active)
+    {
+        UART_SendString("Stop live capture before changing axis\r\n");
+        return;
+    }
+    accelrun_selected_input = input;
+    accelrun_axis_name = name;
+    UI_SetAccelSource(ui_source);
+    UART_SendString("ACCEL source = ");
+    UART_SendString(name);
+    UART_SendString("\r\n");
+}
+
+static void Console_RunAccelRun(void)
+{
+    uint32_t rate_hz;
+
+    if (accelrun_active)
+    {
+        UART_SendString("ACCELRUN: already running\r\n");
+        return;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        return;
+    }
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Stop WAV recorder first\r\n");
+        return;
+    }
+
+    rate_hz = Capture_GetSampleRate();
+
+    if ((Capture_GetSampleCount() != 2048U) ||
+        (FFT_GetSize() != 2048U) ||
+        (rate_hz < 2046U) ||
+        (rate_hz > 2049U))
+    {
+        UART_SendString("Run accelpreset before accelrun\r\n");
+        return;
+    }
+
+    accelrun_previous_input = ADC_GetSelectedInput();
+    accelrun_xyz_mode = (UI_GetAccelSource() == 3U);
+
+    if (!accelrun_xyz_mode && !ADC_SelectInput(accelrun_selected_input))
+    {
+        UART_SendString("ACCELRUN: failed to select ");
+        UART_SendString(accelrun_axis_name); UART_SendString("\r\n"); return;
+    }
+
+    accelrun_frame_count = 0U;
+    accelrun_error_count = 0U;
+    accelrun_stop_requested = false;
+    accelrun_state = ACCELRUN_START_CAPTURE;
+    accelrun_active = true;
+    if (accelrun_xyz_mode)
+        UI_SetAccelXYZSummary(true, 0U, accelrun_xyz_view_axis,
+            accelrun_xyz_rms, accelrun_xyz_peak_hz, accelrun_xyz_peak_mag,
+            accelrun_xyz_clip, accelrun_xyz_vector_rms, accelrun_xyz_dominant_axis);
+    else
+        UI_SetAccelLiveStatus(true, 0U, 0U, 0U, 0U);
+
+    UART_SendString(accelrun_xyz_mode ?
+        "ACCELRUN: live XYZ spectrum started\r\n" : "ACCELRUN: live ");
+    if (!accelrun_xyz_mode)
+    { UART_SendString(accelrun_axis_name); UART_SendString("-axis spectrum started\r\n"); }
+    UART_SendString("Use accelstop to stop and restore ADC input\r\n");
+}
+
+static void Console_RunAccelStop(void)
+{
+    if (!accelrun_active)
+    {
+        UART_SendString("ACCELRUN: not running\r\n");
+        return;
+    }
+
+    accelrun_stop_requested = true;
+    UART_SendString("ACCELRUN: stop requested\r\n");
+}
+
 static void Analyzer_Process(void)
 {
+    if (accelrun_active)
+    {
+        AccelRun_Process();
+        return;
+    }
+
     if (!UI_IsRunning())
     {
         analyzer_state = ANALYZER_STOPPED;

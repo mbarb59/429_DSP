@@ -20,6 +20,14 @@ extern volatile int captureComplete;
 extern uint32_t dmaCaptureCycles;
 extern uint32_t sampleRate;
 
+#define CAPTURE_XYZ_FRAME_COUNT 2048U
+#define CAPTURE_XYZ_AXIS_COUNT  3U
+#define CAPTURE_XYZ_VALUE_COUNT (CAPTURE_XYZ_FRAME_COUNT * CAPTURE_XYZ_AXIS_COUNT)
+extern uint16_t xyzSampleBuffer[CAPTURE_XYZ_VALUE_COUNT];
+extern uint32_t xyzFrameCount;
+void DMA_CaptureXYZSamples(void);
+bool Capture_IsXYZActive(void);
+
 void Capture_Samples(void);
 void DMA_Init(void);
 void DMA_CaptureSamples(void);
