@@ -95,6 +95,8 @@ typedef enum
 } AccelRunState;
 
 /* ANALYZER_SOURCE_MANAGER_STAGE1 */
+/* ANALYZER_TFT_SOURCE_SELECTOR_STAGE2 */
+/* STAGE2_MIC_SELECTOR_VISIBILITY_REPAIR */
 typedef enum
 {
     ANALYZER_SOURCE_MIC = 0,
@@ -6776,8 +6778,40 @@ static void UI_ProcessRecorderActions(void)
                 UI_ShowRecorder();
             }
             break;
-        }        case UI_ACTION_ACCEL_START:
-            if (!accelrun_active) Console_RunAccelRun();
+        }        case UI_ACTION_SOURCE_MIC:
+            UI_SetSourceSelectorValue(0U);
+            if (Analyzer_SelectSource(ANALYZER_SOURCE_MIC))
+            {
+                UART_SendString("UI SOURCE = MIC (UART MIC mode)\r\n");
+            }
+            break;
+        case UI_ACTION_SOURCE_X:
+            UI_SetSourceSelectorValue(1U);
+            if (Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_X)) UI_HideSourceSelector();
+            break;
+        case UI_ACTION_SOURCE_Y:
+            UI_SetSourceSelectorValue(2U);
+            if (Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Y)) UI_HideSourceSelector();
+            break;
+        case UI_ACTION_SOURCE_Z:
+            UI_SetSourceSelectorValue(3U);
+            if (Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Z)) UI_HideSourceSelector();
+            break;
+        case UI_ACTION_SOURCE_XYZ:
+            UI_SetSourceSelectorValue(4U);
+            if (Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_XYZ)) UI_HideSourceSelector();
+            break;
+
+        case UI_ACTION_ACCEL_START:
+            if (Analyzer_GetSource() == ANALYZER_SOURCE_MIC)
+            {
+                UART_SendString("UI START blocked: select X, Y, Z, or XYZ first\r\n");
+                UI_ShowSourceSelector((uint32_t)Analyzer_GetSource());
+            }
+            else if (!accelrun_active)
+            {
+                Console_RunAccelRun();
+            }
             break;
         case UI_ACTION_ACCEL_STOP:
             if (accelrun_active) Console_RunAccelStop();
@@ -6798,9 +6832,9 @@ static void UI_ProcessRecorderActions(void)
             }
             else if (!accelrun_active)
             {
-                if(axis==0U) Console_SelectAccelAxis(ADC_INPUT_ACCEL_X_PC1,"X",0U);
-                else if(axis==1U) Console_SelectAccelAxis(ADC_INPUT_ACCEL_Y_PC5,"Y",1U);
-                else Console_SelectAccelAxis(ADC_INPUT_ACCEL_Z_PC4,"Z",2U);
+                if(axis==0U) (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_X);
+                else if(axis==1U) (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Y);
+                else (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Z);
             }
             break;
         }
@@ -6814,9 +6848,7 @@ static void UI_ProcessRecorderActions(void)
                 }
                 else
                 {
-                    accelrun_xyz_view_axis = 0U;
-                    UI_SetAccelSource(3U);
-                    UART_SendString("ACCEL source = XYZ\r\n");
+                    (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_XYZ);
                 }
             }
             break;
@@ -7430,21 +7462,9 @@ static void Console_RunAccelUi(void)
         UART_SendString("Stop accelrun before accelui\r\n");
         return;
     }
-    Console_RunAccelPreset();
-    if ((Capture_GetSampleCount() == 2048U) &&
-        (FFT_GetSize() == 2048U) &&
-        (Capture_GetSampleRate() >= 2046U) &&
-        (Capture_GetSampleRate() <= 2049U))
-    {
-        UI_ShowAccelLive();
-        accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
-        accelrun_axis_name = "X";
-        accelrun_xyz_mode = false;
-        accelrun_xyz_view_axis = 0U;
-        UI_SetAccelSource(0U);
-        UI_SetAccelLiveStatus(false, 0U, 0U, 0U, 0U);
-        UART_SendString("ACCEL UI: touch START\r\n");
-    }
+    UI_ShowAccelLive();
+    UI_ShowSourceSelector((uint32_t)Analyzer_GetSource());
+    UART_SendString("SOURCE UI: touch MIC, X, Y, Z, or XYZ\r\n");
 }
 
 static void Console_SelectAccelAxis(ADC_Input input,

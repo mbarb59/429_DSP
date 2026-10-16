@@ -227,6 +227,8 @@ typedef struct
     uint32_t accel_xyz_vector_rms;
     uint32_t accel_xyz_dominant_axis;
     bool xyz_save_page;
+    bool source_selector_visible;
+    uint32_t source_selector_value; /* 0=MIC, 1=X, 2=Y, 3=Z, 4=XYZ */
     char xyz_save_message[32];
     /* ACCEL_PEAK_AUTOSCALE_V1 */
     uint8_t accel_live_autoscale_down_frames;
@@ -369,6 +371,8 @@ void UI_Init(void)
     ui.accel_xyz_vector_rms = 0U;
     ui.accel_xyz_dominant_axis = 0U;
     ui.xyz_save_page = false;
+    ui.source_selector_visible = false;
+    ui.source_selector_value = 0U;
     ui.xyz_save_message[0] = '\0';
     ui.accel_live_autoscale_down_frames = 0U;
     ui.mode = UI_MODE_ANALYZER;
@@ -1023,6 +1027,8 @@ void UI_ShowAccelLive(void)
     ui.accel_xyz_vector_rms = 0U;
     ui.accel_xyz_dominant_axis = 0U;
     ui.xyz_save_page = false;
+    ui.source_selector_visible = false;
+    ui.source_selector_value = 0U;
     ui.xyz_save_message[0] = '\0';
     ui.accel_live_autoscale_down_frames = 0U;
     ui_apply_full_span();
@@ -1034,6 +1040,33 @@ void UI_ShowAccelLive(void)
 bool UI_IsAccelLiveScreen(void)
 {
     return ui.accel_live_screen && (ui.mode == UI_MODE_ANALYZER);
+}
+
+void UI_ShowSourceSelector(uint32_t source)
+{
+    if (source > 4U) source = 0U;
+    ui.source_selector_value = source;
+    ui.source_selector_visible = true;
+    ui.xyz_save_page = false;
+    ui.controls_dirty = true;
+}
+
+void UI_HideSourceSelector(void)
+{
+    ui.source_selector_visible = false;
+    ui.controls_dirty = true;
+}
+
+bool UI_IsSourceSelectorVisible(void)
+{
+    return UI_IsAccelLiveScreen() && ui.source_selector_visible;
+}
+
+void UI_SetSourceSelectorValue(uint32_t source)
+{
+    if (source > 4U) source = 0U;
+    ui.source_selector_value = source;
+    if (UI_IsSourceSelectorVisible()) ui.controls_dirty = true;
 }
 
 void UI_ShowXYZSavePage(void)
@@ -1260,6 +1293,25 @@ uint32_t UI_GetMagnitudeMax(void)
 
 static void ui_draw_controls(void)
 {
+    if (UI_IsSourceSelectorVisible())
+    {
+        uint16_t c0=(ui.source_selector_value==0U)?COLOR_GREEN:COLOR_BLUE;
+        uint16_t c1=(ui.source_selector_value==1U)?COLOR_GREEN:COLOR_BLUE;
+        uint16_t c2=(ui.source_selector_value==2U)?COLOR_GREEN:COLOR_BLUE;
+        uint16_t c3=(ui.source_selector_value==3U)?COLOR_GREEN:COLOR_BLUE;
+        uint16_t c4=(ui.source_selector_value==4U)?COLOR_GREEN:COLOR_MAGENTA;
+        Display_FillRect(0,UI_CONTROL_TOP,DISPLAY_WIDTH,UI_CONTROL_HEIGHT,COLOR_BLACK);
+        ui_draw_button(0,c0,COLOR_WHITE); ui_draw_button(64,c1,COLOR_WHITE);
+        ui_draw_button(128,c2,COLOR_WHITE); ui_draw_button(192,c3,COLOR_WHITE);
+        ui_draw_button(256,c4,COLOR_WHITE);
+        Display_DrawString(18,12,"MIC",COLOR_WHITE,c0);
+        Display_DrawString(92,12,"X",COLOR_WHITE,c1);
+        Display_DrawString(156,12,"Y",COLOR_WHITE,c2);
+        Display_DrawString(220,12,"Z",COLOR_WHITE,c3);
+        Display_DrawString(274,12,"XYZ",COLOR_WHITE,c4);
+        return;
+    }
+
     if (UI_IsXYZSavePage())
     {
         Display_FillRect(0, UI_CONTROL_TOP, DISPLAY_WIDTH,
@@ -2680,6 +2732,19 @@ static void ui_draw_peak_marker(void)
 
 static void ui_draw_status(void)
 {
+    if (UI_IsSourceSelectorVisible())
+    {
+        const char *names[5]={"MIC","X","Y","Z","XYZ"};
+        Display_FillRect(0,UI_STATUS_TOP,DISPLAY_WIDTH,UI_STATUS_HEIGHT,COLOR_BLACK);
+        Display_DrawRect(0,UI_STATUS_TOP,DISPLAY_WIDTH,UI_STATUS_HEIGHT,COLOR_CYAN);
+        Display_DrawString(4,UI_STATUS_TOP+8,"SELECT SOURCE",COLOR_CYAN,COLOR_BLACK);
+        Display_DrawString(118,UI_STATUS_TOP+8,names[ui.source_selector_value],COLOR_GREEN,COLOR_BLACK);
+        Display_DrawString(170,UI_STATUS_TOP+8,
+            (ui.source_selector_value==0U)?"MIC UART MODE":"TAP TO APPLY",
+            COLOR_YELLOW,COLOR_BLACK);
+        return;
+    }
+
     if (UI_IsXYZSavePage())
     {
         Display_FillRect(0,UI_STATUS_TOP,DISPLAY_WIDTH,UI_STATUS_HEIGHT,COLOR_BLACK);
@@ -3103,6 +3168,20 @@ static UI_Button ui_hit_test_button(uint16_t x, uint16_t y)
 
 static void ui_execute_button(UI_Button button)
 {
+    if (UI_IsSourceSelectorVisible())
+    {
+        switch(button)
+        {
+            case UI_BUTTON_RUN_STOP: ui.pending_action=UI_ACTION_SOURCE_MIC; break;
+            case UI_BUTTON_FULL: ui.pending_action=UI_ACTION_SOURCE_X; break;
+            case UI_BUTTON_ZOOM_OUT: ui.pending_action=UI_ACTION_SOURCE_Y; break;
+            case UI_BUTTON_ZOOM_IN: ui.pending_action=UI_ACTION_SOURCE_Z; break;
+            case UI_BUTTON_PEAK: ui.pending_action=UI_ACTION_SOURCE_XYZ; break;
+            default: break;
+        }
+        return;
+    }
+
     if (UI_IsXYZSavePage())
     {
         switch(button)

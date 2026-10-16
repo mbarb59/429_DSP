@@ -44,7 +44,12 @@ typedef enum
     UI_ACTION_XYZ_SAVE_TIME,
     UI_ACTION_XYZ_SAVE_FFT,
     UI_ACTION_XYZ_SAVE_BOTH,
-    UI_ACTION_XYZ_SAVE_FILES
+    UI_ACTION_XYZ_SAVE_FILES,
+    UI_ACTION_SOURCE_MIC,
+    UI_ACTION_SOURCE_X,
+    UI_ACTION_SOURCE_Y,
+    UI_ACTION_SOURCE_Z,
+    UI_ACTION_SOURCE_XYZ
 } UI_Action;
 
 /* UI_WAV_INFO_SCREEN_PATCH */
@@ -86,6 +91,10 @@ void UI_NotifySpectrumChanged(void);
 
 /* ACCEL_TOUCH_LIVE_UI_V4 */
 void UI_ShowAccelLive(void);
+void UI_ShowSourceSelector(uint32_t source);
+void UI_HideSourceSelector(void);
+bool UI_IsSourceSelectorVisible(void);
+void UI_SetSourceSelectorValue(uint32_t source);
 bool UI_IsAccelLiveScreen(void);
 void UI_SetAccelLiveStatus(bool running, uint32_t frames,
                            uint32_t peak_hz, uint32_t magnitude,
