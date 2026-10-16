@@ -130,6 +130,10 @@ static uint32_t xyz_csv_last_sequence;
 
 static void SystemClock_Config(void);
 static void Error_Handler(void);
+static void MicRun_Start(void);
+static void MicRun_Stop(void);
+static void MicRun_Process(void);
+static void MicRun_Finish(const char *reason);
 static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
 static bool Analyzer_SetPreset(uint32_t requested_rate_hz, uint32_t fft_size, const char *name);
@@ -304,10 +308,33 @@ typedef enum
     ANALYZER_WAIT_CAPTURE
 } AnalyzerState;
 
+/* MICRUN_STATE_MACHINE_V1 */
+typedef enum
+{
+    MICRUN_IDLE = 0,
+    MICRUN_START_CAPTURE,
+    MICRUN_WAIT_CAPTURE,
+    MICRUN_STOPPING
+} MicRunState;
+
 static AnalyzerState analyzer_state = ANALYZER_STOPPED;
 static uint32_t analyzer_frame_count;
 static uint32_t analyzer_error_count;
 static uint32_t analyzer_last_display_ms;
+
+#define MICRUN_DISPLAY_PERIOD_MS 100U
+#define MICRUN_FRAME_TIMEOUT_MS   50U
+
+static bool micrun_active;
+static bool micrun_stop_requested;
+static MicRunState micrun_state = MICRUN_IDLE;
+static uint32_t micrun_frame_count;
+static uint32_t micrun_error_count;
+static uint32_t micrun_capture_started_ms;
+static uint32_t micrun_last_display_ms;
+static uint32_t micrun_latest_peak_hz;
+static uint32_t micrun_latest_peak_magnitude;
+static uint32_t micrun_latest_rms;
 
 /* UI_RECORDER_CONTROLLER_PATCH */
 /* NUMBERED_RECORDINGS_PATCH */
@@ -2653,7 +2680,32 @@ else if (strcmp(command, "sdread0") == 0)
         {
             Console_RunFsUnmount();
         }
-    }    else if (strcmp(command, "accelui") == 0)
+    }
+    else if (strcmp(command, "micrun") == 0)
+    {
+        MicRun_Start();
+    }
+    else if (strcmp(command, "micstop") == 0)
+    {
+        MicRun_Stop();
+    }
+    else if (strcmp(command, "micrunstatus") == 0)
+    {
+        UART_SendString("MICRUN Status\r\n-------------\r\nActive = ");
+        UART_SendString(micrun_active ? "YES\r\n" : "NO\r\n");
+        UART_SendString("Frames = ");
+        UART_SendDec(micrun_frame_count);
+        UART_SendString("\r\nErrors = ");
+        UART_SendDec(micrun_error_count);
+        UART_SendString("\r\nPeak Hz = ");
+        UART_SendDec(micrun_latest_peak_hz);
+        UART_SendString("\r\nMagnitude = ");
+        UART_SendDec(micrun_latest_peak_magnitude);
+        UART_SendString("\r\nRMS = ");
+        UART_SendDec(micrun_latest_rms);
+        UART_SendString("\r\n");
+    }
+    else if (strcmp(command, "accelui") == 0)
     {
         Console_RunAccelUi();
     }
@@ -6782,7 +6834,9 @@ static void UI_ProcessRecorderActions(void)
             UI_SetSourceSelectorValue(0U);
             if (Analyzer_SelectSource(ANALYZER_SOURCE_MIC))
             {
-                UART_SendString("UI SOURCE = MIC (UART MIC mode)\r\n");
+                UI_SetAccelLiveStatus(false, 0U, 0U, 0U, 0U);
+                UI_HideSourceSelector();
+                UART_SendString("UI SOURCE = MIC LIVE\r\n");
             }
             break;
         case UI_ACTION_SOURCE_X:
@@ -6805,8 +6859,7 @@ static void UI_ProcessRecorderActions(void)
         case UI_ACTION_ACCEL_START:
             if (Analyzer_GetSource() == ANALYZER_SOURCE_MIC)
             {
-                UART_SendString("UI START blocked: select X, Y, Z, or XYZ first\r\n");
-                UI_ShowSourceSelector((uint32_t)Analyzer_GetSource());
+                MicRun_Start();
             }
             else if (!accelrun_active)
             {
@@ -6814,7 +6867,14 @@ static void UI_ProcessRecorderActions(void)
             }
             break;
         case UI_ACTION_ACCEL_STOP:
-            if (accelrun_active) Console_RunAccelStop();
+            if (micrun_active)
+            {
+                MicRun_Stop();
+            }
+            else if (accelrun_active)
+            {
+                Console_RunAccelStop();
+            }
             break;
         case UI_ACTION_ACCEL_X:
         case UI_ACTION_ACCEL_Y:
@@ -7077,6 +7137,12 @@ static bool Analyzer_SelectSource(AnalyzerSource source)
     if (source >= ANALYZER_SOURCE_COUNT)
     {
         UART_SendString("Source selection failed: invalid source\r\n");
+        return false;
+    }
+
+    if (micrun_active)
+    {
+        UART_SendString("Source selection blocked: stop MICRUN first\r\n");
         return false;
     }
 
@@ -7556,8 +7622,221 @@ static void Console_RunAccelStop(void)
     UART_SendString("ACCELRUN: stop requested\r\n");
 }
 
+static void MicRun_Finish(const char *reason)
+{
+    micrun_active = false;
+    micrun_stop_requested = false;
+    micrun_state = MICRUN_IDLE;
+    UI_SetRunning(false);
+
+    (void)ADC_SelectInput(ADC_INPUT_MICROPHONE_PA0);
+
+    UI_SetAccelLiveStatus(false,
+                          micrun_frame_count,
+                          micrun_latest_peak_hz,
+                          micrun_latest_peak_magnitude,
+                          micrun_latest_rms);
+    UI_NotifySpectrumChanged();
+
+    UART_SendString("MICRUN: stopped\r\n");
+    if (reason != NULL)
+    {
+        UART_SendString("Reason = ");
+        UART_SendString(reason);
+        UART_SendString("\r\n");
+    }
+    UART_SendString("Frames = ");
+    UART_SendDec(micrun_frame_count);
+    UART_SendString("\r\nErrors = ");
+    UART_SendDec(micrun_error_count);
+    UART_SendString("\r\nADC Input = PA0\r\n");
+}
+
+static void MicRun_Start(void)
+{
+    uint32_t rate_hz;
+
+    if (micrun_active)
+    {
+        UART_SendString("MICRUN: already running\r\n");
+        return;
+    }
+    if (accelrun_active)
+    {
+        UART_SendString("MICRUN blocked: stop ACCELRUN first\r\n");
+        return;
+    }
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("MICRUN blocked: stop WAV recorder first\r\n");
+        return;
+    }
+    if (!Analyzer_RequireStopped())
+    {
+        return;
+    }
+    if (Analyzer_GetSource() != ANALYZER_SOURCE_MIC)
+    {
+        UART_SendString("MICRUN blocked: select MIC first\r\n");
+        UI_ShowSourceSelector((uint32_t)Analyzer_GetSource());
+        return;
+    }
+
+    rate_hz = Capture_GetSampleRate();
+    if ((Capture_GetSampleCount() != AUDIO_PRESET_FFT_SIZE) ||
+        (FFT_GetSize() != AUDIO_PRESET_FFT_SIZE) ||
+        (rate_hz < 47990U) || (rate_hz > 48010U))
+    {
+        UART_SendString("MICRUN blocked: audio preset mismatch\r\n");
+        return;
+    }
+
+    if ((ADC_GetSelectedInput() != ADC_INPUT_MICROPHONE_PA0) &&
+        !ADC_SelectInput(ADC_INPUT_MICROPHONE_PA0))
+    {
+        UART_SendString("MICRUN failed: PA0 selection busy\r\n");
+        return;
+    }
+
+    micrun_frame_count = 0U;
+    micrun_error_count = 0U;
+    micrun_latest_peak_hz = 0U;
+    micrun_latest_peak_magnitude = 0U;
+    micrun_latest_rms = 0U;
+    micrun_stop_requested = false;
+    micrun_state = MICRUN_START_CAPTURE;
+    micrun_capture_started_ms = 0U;
+    micrun_last_display_ms = HAL_GetTick();
+    micrun_active = true;
+
+    UI_SetRunning(true);
+    UI_HideSourceSelector();
+    UI_SetAccelLiveStatus(true, 0U, 0U, 0U, 0U);
+
+    UART_SendString("MICRUN: live microphone spectrum started\r\n");
+    UART_SendString("Capture = 48000 SPS, FFT = 256\r\n");
+    UART_SendString("Display refresh = 10 Hz\r\n");
+}
+
+static void MicRun_Stop(void)
+{
+    if (!micrun_active)
+    {
+        UART_SendString("MICRUN: already stopped\r\n");
+        return;
+    }
+    if (!micrun_stop_requested)
+    {
+        micrun_stop_requested = true;
+        UART_SendString("MICRUN: stop requested\r\n");
+    }
+}
+
+static void MicRun_Process(void)
+{
+    uint32_t now;
+
+    if (!micrun_active)
+    {
+        return;
+    }
+
+    now = HAL_GetTick();
+    switch (micrun_state)
+    {
+        case MICRUN_IDLE:
+            MicRun_Finish(NULL);
+            break;
+
+        case MICRUN_START_CAPTURE:
+            if (micrun_stop_requested)
+            {
+                MicRun_Finish(NULL);
+                break;
+            }
+            if (Capture_IsRecorderActive())
+            {
+                micrun_error_count++;
+                MicRun_Finish("recorder became active");
+                break;
+            }
+            if ((Analyzer_GetSource() != ANALYZER_SOURCE_MIC) ||
+                (ADC_GetSelectedInput() != ADC_INPUT_MICROPHONE_PA0))
+            {
+                micrun_error_count++;
+                MicRun_Finish("MIC source changed");
+                break;
+            }
+
+            DMA_CaptureSamples();
+            micrun_capture_started_ms = now;
+            micrun_state = MICRUN_WAIT_CAPTURE;
+            break;
+
+        case MICRUN_WAIT_CAPTURE:
+            if (captureComplete < 0)
+            {
+                micrun_error_count++;
+                MicRun_Finish("capture error");
+                break;
+            }
+            if (captureComplete == 0)
+            {
+                if ((now - micrun_capture_started_ms) >= MICRUN_FRAME_TIMEOUT_MS)
+                {
+                    micrun_error_count++;
+                    MicRun_Finish("capture timeout");
+                }
+                break;
+            }
+            if (!FFT_Process())
+            {
+                micrun_error_count++;
+                MicRun_Finish("FFT error");
+                break;
+            }
+
+            micrun_frame_count++;
+            micrun_latest_peak_hz = FFT_GetPeakFrequency();
+            micrun_latest_peak_magnitude =
+                FFT_GetMagnitude(FFT_GetPeakBin());
+            micrun_latest_rms = FFT_GetRMS();
+
+            /* TFT updates are intentionally limited to 10 Hz. */
+            if ((now - micrun_last_display_ms) >= MICRUN_DISPLAY_PERIOD_MS)
+            {
+                micrun_last_display_ms = now;
+                UI_SetAccelLiveStatus(true,
+                                      micrun_frame_count,
+                                      micrun_latest_peak_hz,
+                                      micrun_latest_peak_magnitude,
+                                      micrun_latest_rms);
+                UI_NotifySpectrumChanged();
+            }
+
+            micrun_state = micrun_stop_requested ?
+                           MICRUN_STOPPING : MICRUN_START_CAPTURE;
+            break;
+
+        case MICRUN_STOPPING:
+            MicRun_Finish(NULL);
+            break;
+
+        default:
+            micrun_error_count++;
+            MicRun_Finish("state error");
+            break;
+    }
+}
+
 static void Analyzer_Process(void)
 {
+    if (micrun_active)
+    {
+        MicRun_Process();
+        return;
+    }
+
     if (accelrun_active)
     {
         AccelRun_Process();
