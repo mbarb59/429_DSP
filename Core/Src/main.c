@@ -94,6 +94,17 @@ typedef enum
     ACCELRUN_WAIT_CAPTURE
 } AccelRunState;
 
+/* ANALYZER_SOURCE_MANAGER_STAGE1 */
+typedef enum
+{
+    ANALYZER_SOURCE_MIC = 0,
+    ANALYZER_SOURCE_ACCEL_X,
+    ANALYZER_SOURCE_ACCEL_Y,
+    ANALYZER_SOURCE_ACCEL_Z,
+    ANALYZER_SOURCE_ACCEL_XYZ,
+    ANALYZER_SOURCE_COUNT
+} AnalyzerSource;
+
 static bool accelrun_active;
 static bool accelrun_stop_requested;
 static AccelRunState accelrun_state = ACCELRUN_IDLE;
@@ -111,6 +122,7 @@ static uint32_t accelrun_xyz_peak_mag[3];
 static uint8_t accelrun_xyz_clip[3];
 static uint32_t accelrun_xyz_vector_rms;
 static uint32_t accelrun_xyz_dominant_axis;
+static AnalyzerSource analyzer_source = ANALYZER_SOURCE_MIC;
 /* XYZ_CSV_UART_V1 */
 static uint32_t xyz_csv_last_sequence;
 
@@ -119,6 +131,12 @@ static void Error_Handler(void);
 static bool Analyzer_RequireStopped(void);
 static bool Analyzer_SetFFTSize(uint32_t fft_size);
 static bool Analyzer_SetPreset(uint32_t requested_rate_hz, uint32_t fft_size, const char *name);
+static bool Analyzer_SelectSource(AnalyzerSource source);
+static AnalyzerSource Analyzer_GetSource(void);
+static const char *Analyzer_GetSourceName(AnalyzerSource source);
+static const char *Analyzer_GetAdcInputName(ADC_Input input);
+static void Analyzer_PrintSource(void);
+static void Console_RunSourceCommand(const char *command);
 static void Console_RunAccelPreset(void);
 static void Console_RunSaveXYZTime(void);
 static void Console_RunSaveXYZFft(void);
@@ -2646,6 +2664,15 @@ else if (strcmp(command, "sdread0") == 0)
     {
         Console_RunAccelStop();
     }
+    else if ((strcmp(command, "source") == 0) ||
+             (strcmp(command, "source mic") == 0) ||
+             (strcmp(command, "source x") == 0) ||
+             (strcmp(command, "source y") == 0) ||
+             (strcmp(command, "source z") == 0) ||
+             (strcmp(command, "source xyz") == 0))
+    {
+        Console_RunSourceCommand(command);
+    }
     else if (strcmp(command, "accelpreset") == 0)
     {
         Console_RunAccelPreset();
@@ -3160,6 +3187,12 @@ static void Console_PrintHelp(void)
         "accelrun    - Start live X-axis vibration TFT\r\n"
         "accelstop   - Stop live vibration TFT and restore ADC\r\n"
         "accelpreset - 2048 SPS, 2048-point vibration FFT\r\n"
+        "source      - Show selected source and ADC state\r\n"
+        "source mic  - Select MIC on PA0 with audio preset\r\n"
+        "source x    - Select accelerometer X on PC1\r\n"
+        "source y    - Select accelerometer Y on PC5\r\n"
+        "source z    - Select accelerometer Z on PC4\r\n"
+        "source xyz  - Select aligned XYZ capture mode\r\n"
         "audiopreset - Restore 48000 SPS audio FFT preset\r\n"
         "fft256      - Set capture and FFT size to 256\r\n"
         "fft512      - Set capture and FFT size to 512\r\n"
@@ -6942,6 +6975,224 @@ static bool Analyzer_SetPreset(
 
     Console_PrintAnalyzerConfig();
     return true;
+}
+
+static const char *Analyzer_GetSourceName(AnalyzerSource source)
+{
+    switch (source)
+    {
+        case ANALYZER_SOURCE_MIC:       return "MIC";
+        case ANALYZER_SOURCE_ACCEL_X:   return "ACCEL X";
+        case ANALYZER_SOURCE_ACCEL_Y:   return "ACCEL Y";
+        case ANALYZER_SOURCE_ACCEL_Z:   return "ACCEL Z";
+        case ANALYZER_SOURCE_ACCEL_XYZ: return "ACCEL XYZ";
+        default:                        return "UNKNOWN";
+    }
+}
+
+static const char *Analyzer_GetAdcInputName(ADC_Input input)
+{
+    switch (input)
+    {
+        case ADC_INPUT_MICROPHONE_PA0: return "PA0 / ADC1 CH0";
+        case ADC_INPUT_ACCEL_X_PA1:    return "PA1 / ADC1 CH1";
+        case ADC_INPUT_ACCEL_X_PC1:    return "PC1 / ADC1 CH11";
+        case ADC_INPUT_ACCEL_Y_PC5:    return "PC5 / ADC1 CH15";
+        case ADC_INPUT_ACCEL_Z_PC4:    return "PC4 / ADC1 CH14";
+        default:                       return "UNKNOWN ADC INPUT";
+    }
+}
+
+static AnalyzerSource Analyzer_GetSource(void)
+{
+    return analyzer_source;
+}
+
+static void Analyzer_PrintSource(void)
+{
+    AnalyzerSource source = Analyzer_GetSource();
+    ADC_Input adc_input = ADC_GetSelectedInput();
+
+    UART_SendString("Analyzer Source\r\n");
+    UART_SendString("---------------\r\n");
+    UART_SendString("Source         = ");
+    UART_SendString(Analyzer_GetSourceName(source));
+    UART_SendString("\r\nPreset         = ");
+    UART_SendString((source == ANALYZER_SOURCE_MIC) ? "AUDIO" : "VIBRATION");
+    UART_SendString("\r\nCapture Layout = ");
+    UART_SendString((source == ANALYZER_SOURCE_ACCEL_XYZ) ?
+                    "XYZ SCAN DURING CAPTURE" : "SINGLE CHANNEL");
+    UART_SendString("\r\nIdle ADC Input = ");
+    UART_SendString(Analyzer_GetAdcInputName(adc_input));
+    UART_SendString("\r\nSample Rate    = ");
+    UART_SendDec(Capture_GetSampleRate());
+    UART_SendString(" SPS\r\nCapture Samples= ");
+    UART_SendDec(Capture_GetSampleCount());
+    UART_SendString("\r\nFFT Size       = ");
+    UART_SendDec(FFT_GetSize());
+    UART_SendString("\r\nSelection      = READY\r\n");
+}
+
+static bool Analyzer_SelectSource(AnalyzerSource source)
+{
+    AnalyzerSource previous_source = analyzer_source;
+    ADC_Input previous_input = ADC_GetSelectedInput();
+    ADC_Input target_input;
+    uint32_t target_rate;
+    uint32_t target_fft;
+    const char *preset_name;
+
+    if (source >= ANALYZER_SOURCE_COUNT)
+    {
+        UART_SendString("Source selection failed: invalid source\r\n");
+        return false;
+    }
+
+    if (accelrun_active)
+    {
+        UART_SendString("Source selection blocked: stop live analyzer first\r\n");
+        return false;
+    }
+
+    if (Capture_IsRecorderActive())
+    {
+        UART_SendString("Source selection blocked: stop recorder first\r\n");
+        return false;
+    }
+
+    if (!Analyzer_RequireStopped())
+    {
+        return false;
+    }
+
+    if (source == ANALYZER_SOURCE_MIC)
+    {
+        target_rate = AUDIO_PRESET_RATE_HZ;
+        target_fft = AUDIO_PRESET_FFT_SIZE;
+        preset_name = "Audio FFT";
+        target_input = ADC_INPUT_MICROPHONE_PA0;
+    }
+    else
+    {
+        target_rate = ACCEL_PRESET_RATE_HZ;
+        target_fft = ACCEL_PRESET_FFT_SIZE;
+        preset_name = "Accelerometer FFT";
+
+        switch (source)
+        {
+            case ANALYZER_SOURCE_ACCEL_Y:
+                target_input = ADC_INPUT_ACCEL_Y_PC5;
+                break;
+            case ANALYZER_SOURCE_ACCEL_Z:
+                target_input = ADC_INPUT_ACCEL_Z_PC4;
+                break;
+            case ANALYZER_SOURCE_ACCEL_X:
+            case ANALYZER_SOURCE_ACCEL_XYZ:
+            default:
+                /* XYZ remains safely parked on X until DMA enables scan mode. */
+                target_input = ADC_INPUT_ACCEL_X_PC1;
+                break;
+        }
+    }
+
+    UI_HideXYZSavePage();
+
+    if (!Analyzer_SetPreset(target_rate, target_fft, preset_name))
+    {
+        UART_SendString("Source selection failed: preset rejected\r\n");
+        return false;
+    }
+
+    if (!ADC_SelectInput(target_input))
+    {
+        UART_SendString("Source selection failed: ADC input busy\r\n");
+
+        /* Best-effort rollback to the prior source preset and input. */
+        if (previous_source == ANALYZER_SOURCE_MIC)
+        {
+            (void)Analyzer_SetPreset(AUDIO_PRESET_RATE_HZ,
+                                     AUDIO_PRESET_FFT_SIZE,
+                                     "Audio FFT rollback");
+        }
+        else
+        {
+            (void)Analyzer_SetPreset(ACCEL_PRESET_RATE_HZ,
+                                     ACCEL_PRESET_FFT_SIZE,
+                                     "Accelerometer FFT rollback");
+        }
+        (void)ADC_SelectInput(previous_input);
+        return false;
+    }
+
+    analyzer_source = source;
+    accelrun_xyz_mode = (source == ANALYZER_SOURCE_ACCEL_XYZ);
+
+    switch (source)
+    {
+        case ANALYZER_SOURCE_ACCEL_X:
+            accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
+            accelrun_axis_name = "X";
+            UI_SetAccelSource(0U);
+            break;
+        case ANALYZER_SOURCE_ACCEL_Y:
+            accelrun_selected_input = ADC_INPUT_ACCEL_Y_PC5;
+            accelrun_axis_name = "Y";
+            UI_SetAccelSource(1U);
+            break;
+        case ANALYZER_SOURCE_ACCEL_Z:
+            accelrun_selected_input = ADC_INPUT_ACCEL_Z_PC4;
+            accelrun_axis_name = "Z";
+            UI_SetAccelSource(2U);
+            break;
+        case ANALYZER_SOURCE_ACCEL_XYZ:
+            accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
+            accelrun_axis_name = "XYZ";
+            accelrun_xyz_view_axis = 0U;
+            UI_SetAccelSource(3U);
+            break;
+        case ANALYZER_SOURCE_MIC:
+        default:
+            /* Stage 1 leaves the existing TFT layout unchanged. */
+            accelrun_selected_input = ADC_INPUT_ACCEL_X_PC1;
+            accelrun_axis_name = "X";
+            accelrun_xyz_mode = false;
+            break;
+    }
+
+    Analyzer_PrintSource();
+    return true;
+}
+
+static void Console_RunSourceCommand(const char *command)
+{
+    if (strcmp(command, "source") == 0)
+    {
+        Analyzer_PrintSource();
+    }
+    else if (strcmp(command, "source mic") == 0)
+    {
+        (void)Analyzer_SelectSource(ANALYZER_SOURCE_MIC);
+    }
+    else if (strcmp(command, "source x") == 0)
+    {
+        (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_X);
+    }
+    else if (strcmp(command, "source y") == 0)
+    {
+        (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Y);
+    }
+    else if (strcmp(command, "source z") == 0)
+    {
+        (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_Z);
+    }
+    else if (strcmp(command, "source xyz") == 0)
+    {
+        (void)Analyzer_SelectSource(ANALYZER_SOURCE_ACCEL_XYZ);
+    }
+    else
+    {
+        UART_SendString("Usage: source [mic|x|y|z|xyz]\r\n");
+    }
 }
 
 static void Console_RunAccelPreset(void)
