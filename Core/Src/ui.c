@@ -2786,6 +2786,85 @@ static void ui_draw_status(void)
         return;
     }
 
+    /* STAGE4_MIC_DISPLAY_POLISH_V1 */
+    if (UI_IsAccelLiveScreen() && (ui.source_selector_value == 0U))
+    {
+        char frequency[16];
+        uint16_t state_color = ui.accel_live_running ?
+                               COLOR_GREEN : COLOR_YELLOW;
+
+        ui_format_peak_frequency(ui.accel_live_peak_hz,
+                                 frequency,
+                                 sizeof(frequency));
+
+        Display_FillRect(0,
+                         UI_STATUS_TOP,
+                         DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         COLOR_BLACK);
+
+        Display_DrawRect(0,
+                         UI_STATUS_TOP,
+                         DISPLAY_WIDTH,
+                         UI_STATUS_HEIGHT,
+                         state_color);
+
+        Display_DrawString(4,
+                           UI_STATUS_TOP + 8,
+                           "MIC",
+                           COLOR_CYAN,
+                           COLOR_BLACK);
+
+        Display_DrawString(30,
+                           UI_STATUS_TOP + 8,
+                           ui.accel_live_running ? "LIVE" : "READY",
+                           state_color,
+                           COLOR_BLACK);
+
+        Display_DrawString(68,
+                           UI_STATUS_TOP + 8,
+                           "PK",
+                           COLOR_WHITE,
+                           COLOR_BLACK);
+
+        Display_DrawString(86,
+                           UI_STATUS_TOP + 8,
+                           frequency,
+                           COLOR_WHITE,
+                           COLOR_BLACK);
+
+        Display_DrawString(158,
+                           UI_STATUS_TOP + 8,
+                           "M",
+                           COLOR_CYAN,
+                           COLOR_BLACK);
+        ui_draw_uint(170,
+                     UI_STATUS_TOP + 8,
+                     ui.accel_live_magnitude,
+                     COLOR_WHITE);
+
+        Display_DrawString(210,
+                           UI_STATUS_TOP + 8,
+                           "R",
+                           COLOR_CYAN,
+                           COLOR_BLACK);
+        ui_draw_uint(222,
+                     UI_STATUS_TOP + 8,
+                     ui.accel_live_rms,
+                     COLOR_WHITE);
+
+        Display_DrawString(258,
+                           UI_STATUS_TOP + 8,
+                           "F",
+                           COLOR_CYAN,
+                           COLOR_BLACK);
+        ui_draw_uint(270,
+                     UI_STATUS_TOP + 8,
+                     ui.accel_live_frames,
+                     COLOR_WHITE);
+        return;
+    }
+
     if (UI_IsAccelLiveScreen())
     {
         char frequency[16];
