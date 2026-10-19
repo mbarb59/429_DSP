@@ -232,6 +232,28 @@ typedef struct
     char xyz_save_message[32];
     /* ACCEL_PEAK_AUTOSCALE_V1 */
     uint8_t accel_live_autoscale_down_frames;
+    /* STAGE5A_LIVE_PEAK_HOLD_V1 */
+    bool accel_live_hold_valid;
+    uint32_t accel_live_hold_hz;
+    uint32_t accel_live_hold_magnitude;
+    bool accel_xyz_hold_valid[3];
+    uint32_t accel_xyz_hold_hz[3];
+    uint32_t accel_xyz_hold_magnitude[3];
+    /* STAGE5A_QUALIFIED_PEAK_HOLD_V1 */
+    bool accel_live_candidate_valid;
+    uint32_t accel_live_candidate_hz;
+    uint32_t accel_live_candidate_magnitude;
+    uint8_t accel_live_candidate_count;
+    bool accel_xyz_candidate_valid[3];
+    uint32_t accel_xyz_candidate_hz[3];
+    uint32_t accel_xyz_candidate_magnitude[3];
+    uint8_t accel_xyz_candidate_count[3];
+    /* STAGE5A_VISIBLE_UPDATE_HOLD_V1 */
+    uint8_t accel_live_hold_settle_updates;
+    uint8_t accel_xyz_hold_settle_updates;
+    /* STAGE5A_VERTICAL_POSITION_V1 */
+    uint16_t accel_live_hold_level_permille;
+    uint16_t accel_xyz_hold_level_permille[3];
 
     UI_Mode mode;
     UI_Action pending_action;
@@ -324,6 +346,7 @@ static void ui_draw_signed_db(int32_t x,
                               int16_t db_tenths,
                               uint16_t color);
 static void ui_draw_spectrum_trace(void);
+static void ui_draw_peak_hold_marker(void);
 static void ui_draw_peak_marker(void);
 static void ui_draw_button(int32_t x, uint16_t fill_color, uint16_t border_color);
 
@@ -539,6 +562,7 @@ void UI_DrawSpectrum(void)
         if (FFT_IsValid())
         {
             ui_draw_spectrum_trace();
+            ui_draw_peak_hold_marker();
             ui_draw_peak_marker();
         }
     }
@@ -1031,6 +1055,30 @@ void UI_ShowAccelLive(void)
     ui.source_selector_value = 0U;
     ui.xyz_save_message[0] = '\0';
     ui.accel_live_autoscale_down_frames = 0U;
+    ui.accel_live_hold_valid = false;
+    ui.accel_live_hold_hz = 0U;
+    ui.accel_live_hold_magnitude = 0U;
+    memset(ui.accel_xyz_hold_valid, 0, sizeof(ui.accel_xyz_hold_valid));
+    memset(ui.accel_xyz_hold_hz, 0, sizeof(ui.accel_xyz_hold_hz));
+    memset(ui.accel_xyz_hold_magnitude, 0,
+           sizeof(ui.accel_xyz_hold_magnitude));
+    ui.accel_live_candidate_valid = false;
+    ui.accel_live_candidate_hz = 0U;
+    ui.accel_live_candidate_magnitude = 0U;
+    ui.accel_live_candidate_count = 0U;
+    memset(ui.accel_xyz_candidate_valid, 0,
+           sizeof(ui.accel_xyz_candidate_valid));
+    memset(ui.accel_xyz_candidate_hz, 0,
+           sizeof(ui.accel_xyz_candidate_hz));
+    memset(ui.accel_xyz_candidate_magnitude, 0,
+           sizeof(ui.accel_xyz_candidate_magnitude));
+    memset(ui.accel_xyz_candidate_count, 0,
+           sizeof(ui.accel_xyz_candidate_count));
+    ui.accel_live_hold_settle_updates = 0U;
+    ui.accel_xyz_hold_settle_updates = 0U;
+    ui.accel_live_hold_level_permille = 0U;
+    memset(ui.accel_xyz_hold_level_permille, 0,
+           sizeof(ui.accel_xyz_hold_level_permille));
     ui_apply_full_span();
     ui.graph_dirty = true;
     ui.controls_dirty = true;
@@ -1128,30 +1176,217 @@ void UI_SetAccelXYZSummary(bool running,
                            uint32_t dominant_axis)
 {
     uint32_t axis;
+    uint32_t bin_tolerance_hz;
+
     if (view_axis > 2U) view_axis = 0U;
+
+    if (running && (frames == 0U))
+    {
+        memset(ui.accel_xyz_hold_valid, 0, sizeof(ui.accel_xyz_hold_valid));
+        memset(ui.accel_xyz_hold_hz, 0, sizeof(ui.accel_xyz_hold_hz));
+        memset(ui.accel_xyz_hold_magnitude, 0,
+               sizeof(ui.accel_xyz_hold_magnitude));
+        memset(ui.accel_xyz_hold_level_permille, 0,
+               sizeof(ui.accel_xyz_hold_level_permille));
+        memset(ui.accel_xyz_candidate_valid, 0,
+               sizeof(ui.accel_xyz_candidate_valid));
+        memset(ui.accel_xyz_candidate_hz, 0,
+               sizeof(ui.accel_xyz_candidate_hz));
+        memset(ui.accel_xyz_candidate_magnitude, 0,
+               sizeof(ui.accel_xyz_candidate_magnitude));
+        memset(ui.accel_xyz_candidate_count, 0,
+               sizeof(ui.accel_xyz_candidate_count));
+        ui.accel_xyz_hold_settle_updates = 0U;
+    }
+
+    bin_tolerance_hz = (FFT_GetBinWidthMilliHz() + 999U) / 1000U;
+    if (bin_tolerance_hz < 1U) bin_tolerance_hz = 1U;
+
+    if (running && (ui.accel_xyz_hold_settle_updates < 255U))
+    {
+        ui.accel_xyz_hold_settle_updates++;
+    }
+
     ui.accel_live_source = 3U;
     ui.accel_xyz_view_axis = view_axis;
     ui.accel_live_running = running;
     ui.accel_live_frames = frames;
     ui.accel_xyz_vector_rms = vector_rms;
     ui.accel_xyz_dominant_axis = dominant_axis;
+
     for (axis = 0U; axis < 3U; axis++)
     {
+        uint32_t frequency_delta;
+        uint32_t promotion_margin;
+
         ui.accel_xyz_rms[axis] = rms[axis];
         ui.accel_xyz_peak_hz[axis] = peak_hz[axis];
         ui.accel_xyz_peak_mag[axis] = peak_mag[axis];
         ui.accel_xyz_clip[axis] = clip_flags[axis];
+
+        if (running && (ui.accel_xyz_hold_settle_updates > 3U))
+        {
+            frequency_delta =
+                (peak_hz[axis] >= ui.accel_xyz_candidate_hz[axis]) ?
+                (peak_hz[axis] - ui.accel_xyz_candidate_hz[axis]) :
+                (ui.accel_xyz_candidate_hz[axis] - peak_hz[axis]);
+
+            if (ui.accel_xyz_candidate_valid[axis] &&
+                (frequency_delta <= bin_tolerance_hz))
+            {
+                if (peak_mag[axis] >
+                    ui.accel_xyz_candidate_magnitude[axis])
+                {
+                    ui.accel_xyz_candidate_magnitude[axis] = peak_mag[axis];
+                    ui.accel_xyz_candidate_hz[axis] = peak_hz[axis];
+                }
+                if (ui.accel_xyz_candidate_count[axis] < 255U)
+                {
+                    ui.accel_xyz_candidate_count[axis]++;
+                }
+            }
+            else
+            {
+                ui.accel_xyz_candidate_valid[axis] = true;
+                ui.accel_xyz_candidate_hz[axis] = peak_hz[axis];
+                ui.accel_xyz_candidate_magnitude[axis] = peak_mag[axis];
+                ui.accel_xyz_candidate_count[axis] = 1U;
+            }
+
+            if (ui.accel_xyz_candidate_count[axis] >= 3U)
+            {
+                promotion_margin = ui.accel_xyz_hold_magnitude[axis] / 8U;
+                if (promotion_margin < 1U) promotion_margin = 1U;
+
+                if (!ui.accel_xyz_hold_valid[axis] ||
+                    (ui.accel_xyz_candidate_magnitude[axis] >=
+                     (ui.accel_xyz_hold_magnitude[axis] +
+                      promotion_margin)))
+                {
+                    ui.accel_xyz_hold_valid[axis] = true;
+                    ui.accel_xyz_hold_hz[axis] =
+                        ui.accel_xyz_candidate_hz[axis];
+                    ui.accel_xyz_hold_magnitude[axis] =
+                        ui.accel_xyz_candidate_magnitude[axis];
+                    if (ui.magnitude_max > 0U)
+                    {
+                        uint64_t level =
+                            ((uint64_t)ui.accel_xyz_candidate_magnitude[axis] *
+                             1000ULL) /
+                            (uint64_t)ui.magnitude_max;
+                        if (level > 1000ULL) level = 1000ULL;
+                        ui.accel_xyz_hold_level_permille[axis] =
+                            (uint16_t)level;
+                    }
+                    else
+                    {
+                        ui.accel_xyz_hold_level_permille[axis] = 0U;
+                    }
+                }
+            }
+        }
     }
+
     ui.accel_live_peak_hz = peak_hz[view_axis];
     ui.accel_live_magnitude = peak_mag[view_axis];
     ui.accel_live_rms = rms[view_axis];
-    if (UI_IsAccelLiveScreen()) ui.controls_dirty = true;
+
+    if (UI_IsAccelLiveScreen())
+    {
+        ui.controls_dirty = true;
+    }
 }
 
 void UI_SetAccelLiveStatus(bool running, uint32_t frames,
                            uint32_t peak_hz, uint32_t magnitude,
                            uint32_t rms)
 {
+    uint32_t bin_tolerance_hz;
+    uint32_t frequency_delta;
+    uint32_t promotion_margin;
+    uint32_t settle_updates;
+
+    if (running && (frames == 0U))
+    {
+        ui.accel_live_hold_valid = false;
+        ui.accel_live_hold_hz = 0U;
+        ui.accel_live_hold_magnitude = 0U;
+        ui.accel_live_hold_level_permille = 0U;
+        ui.accel_live_candidate_valid = false;
+        ui.accel_live_candidate_hz = 0U;
+        ui.accel_live_candidate_magnitude = 0U;
+        ui.accel_live_candidate_count = 0U;
+        ui.accel_live_hold_settle_updates = 0U;
+    }
+
+    /* Count visible/status updates, not the high-rate MIC FFT frames. */
+    settle_updates = (ui.source_selector_value == 0U) ? 5U : 3U;
+
+    if (running && (ui.accel_live_hold_settle_updates < 255U))
+    {
+        ui.accel_live_hold_settle_updates++;
+    }
+
+    if (running &&
+        (ui.accel_live_hold_settle_updates > settle_updates))
+    {
+        bin_tolerance_hz = (FFT_GetBinWidthMilliHz() + 999U) / 1000U;
+        if (bin_tolerance_hz < 1U) bin_tolerance_hz = 1U;
+
+        frequency_delta = (peak_hz >= ui.accel_live_candidate_hz) ?
+                          (peak_hz - ui.accel_live_candidate_hz) :
+                          (ui.accel_live_candidate_hz - peak_hz);
+
+        if (ui.accel_live_candidate_valid &&
+            (frequency_delta <= bin_tolerance_hz))
+        {
+            if (magnitude > ui.accel_live_candidate_magnitude)
+            {
+                ui.accel_live_candidate_magnitude = magnitude;
+                ui.accel_live_candidate_hz = peak_hz;
+            }
+            if (ui.accel_live_candidate_count < 255U)
+            {
+                ui.accel_live_candidate_count++;
+            }
+        }
+        else
+        {
+            ui.accel_live_candidate_valid = true;
+            ui.accel_live_candidate_hz = peak_hz;
+            ui.accel_live_candidate_magnitude = magnitude;
+            ui.accel_live_candidate_count = 1U;
+        }
+
+        if (ui.accel_live_candidate_count >= 3U)
+        {
+            promotion_margin = ui.accel_live_hold_magnitude / 8U;
+            if (promotion_margin < 1U) promotion_margin = 1U;
+
+            if (!ui.accel_live_hold_valid ||
+                (ui.accel_live_candidate_magnitude >=
+                 (ui.accel_live_hold_magnitude + promotion_margin)))
+            {
+                ui.accel_live_hold_valid = true;
+                ui.accel_live_hold_hz = ui.accel_live_candidate_hz;
+                ui.accel_live_hold_magnitude =
+                    ui.accel_live_candidate_magnitude;
+                if (ui.magnitude_max > 0U)
+                {
+                    uint64_t level =
+                        ((uint64_t)ui.accel_live_candidate_magnitude * 1000ULL) /
+                        (uint64_t)ui.magnitude_max;
+                    if (level > 1000ULL) level = 1000ULL;
+                    ui.accel_live_hold_level_permille = (uint16_t)level;
+                }
+                else
+                {
+                    ui.accel_live_hold_level_permille = 0U;
+                }
+            }
+        }
+    }
+
     ui.accel_live_running = running;
     ui.accel_live_frames = frames;
     ui.accel_live_peak_hz = peak_hz;
@@ -2698,6 +2933,78 @@ static void ui_draw_spectrum_trace(void)
 
         Display_DrawLine(x0, y0, x1, y1, COLOR_GREEN);
     }
+}
+
+static void ui_draw_peak_hold_marker(void)
+{
+    bool valid;
+    uint32_t hold_hz;
+    uint16_t hold_level_permille;
+    uint32_t bin_width_millihz;
+    uint32_t hold_bin;
+    uint32_t last_bin;
+    int32_t hold_x;
+    int32_t hold_y;
+    int32_t marker_top;
+
+    if (!UI_IsAccelLiveScreen())
+    {
+        return;
+    }
+
+    if (ui.accel_live_source == 3U)
+    {
+        uint32_t axis = ui.accel_xyz_view_axis;
+        if (axis > 2U) axis = 0U;
+        valid = ui.accel_xyz_hold_valid[axis];
+        hold_hz = ui.accel_xyz_hold_hz[axis];
+        hold_level_permille = ui.accel_xyz_hold_level_permille[axis];
+    }
+    else
+    {
+        valid = ui.accel_live_hold_valid;
+        hold_hz = ui.accel_live_hold_hz;
+        hold_level_permille = ui.accel_live_hold_level_permille;
+    }
+
+    if (!valid)
+    {
+        return;
+    }
+
+    bin_width_millihz = FFT_GetBinWidthMilliHz();
+    if (bin_width_millihz == 0U)
+    {
+        return;
+    }
+
+    hold_bin = (uint32_t)((((uint64_t)hold_hz * 1000ULL) +
+                           ((uint64_t)bin_width_millihz / 2ULL)) /
+                          (uint64_t)bin_width_millihz);
+    last_bin = ui_last_visible_bin();
+
+    if ((hold_bin < ui.first_bin) || (hold_bin > last_bin))
+    {
+        return;
+    }
+
+    hold_x = ui_bin_to_x(hold_bin);
+    hold_y = UI_GRAPH_BOTTOM -
+             (int32_t)(((uint32_t)hold_level_permille *
+                        (UI_GRAPH_HEIGHT - 1U)) / 1000U);
+
+    if (hold_y < UI_GRAPH_TOP) hold_y = UI_GRAPH_TOP;
+    if (hold_y > UI_GRAPH_BOTTOM) hold_y = UI_GRAPH_BOTTOM;
+
+    marker_top = hold_y - 10;
+    if (marker_top < UI_GRAPH_TOP) marker_top = UI_GRAPH_TOP;
+
+    Display_DrawLine(hold_x, marker_top,
+                     hold_x, hold_y,
+                     COLOR_CYAN);
+    Display_DrawLine(hold_x - 4, marker_top,
+                     hold_x + 4, marker_top,
+                     COLOR_CYAN);
 }
 
 static void ui_draw_peak_marker(void)
