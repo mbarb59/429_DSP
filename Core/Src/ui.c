@@ -22,6 +22,7 @@
 #include "wav_fft_viewer.h"
 
 #include <string.h>
+#include <math.h>
 
 #include "stm32f4xx_hal.h"
 
@@ -254,6 +255,12 @@ typedef struct
     /* STAGE5A_VERTICAL_POSITION_V1 */
     uint16_t accel_live_hold_level_permille;
     uint16_t accel_xyz_hold_level_permille[3];
+    /* STAGE6_LIVE_VIBRATION_DB_V1 */
+    int16_t accel_live_hold_db_tenths;
+    int16_t accel_xyz_hold_db_tenths[3];
+    /* STAGE6A_DB_FINALIZATION_V1 */
+    int16_t accel_live_candidate_db_tenths;
+    int16_t accel_xyz_candidate_db_tenths[3];
 
     UI_Mode mode;
     UI_Action pending_action;
@@ -330,6 +337,13 @@ static void ui_draw_grid(void);
 static void ui_draw_db_grid(void);
 static void ui_draw_db_spectrum_trace(void);
 static void ui_draw_db_peak_marker(void);
+/* STAGE6_LIVE_VIBRATION_DB_V1 */
+static int16_t ui_live_magnitude_to_db_tenths(uint32_t magnitude);
+static int32_t ui_live_db_tenths_to_y(int16_t db_tenths);
+static void ui_draw_live_db_grid(void);
+static void ui_draw_live_db_spectrum_trace(void);
+static void ui_draw_live_db_peak_marker(void);
+static void ui_draw_live_db_peak_hold_marker(void);
 static void ui_draw_fft_timeline(void);
 static void ui_draw_fft_readings(void);
 static int32_t ui_recorded_fft_graph_bottom(void);
@@ -557,13 +571,29 @@ void UI_DrawSpectrum(void)
                          UI_GRAPH_WIDTH,
                          UI_GRAPH_HEIGHT,
                          COLOR_BLACK);
-        ui_draw_grid();
-
-        if (FFT_IsValid())
+        /* STAGE6_LIVE_VIBRATION_DB_V1
+         * Keep MIC on the validated raw-magnitude graph. Vibration sources
+         * use a fixed -90..0 dBFS scale referenced to 2048 ADC counts.
+         */
+        if (UI_IsAccelLiveScreen() && (ui.source_selector_value != 0U))
         {
-            ui_draw_spectrum_trace();
-            ui_draw_peak_hold_marker();
-            ui_draw_peak_marker();
+            ui_draw_live_db_grid();
+            if (FFT_IsValid())
+            {
+                ui_draw_live_db_spectrum_trace();
+                ui_draw_live_db_peak_hold_marker();
+                ui_draw_live_db_peak_marker();
+            }
+        }
+        else
+        {
+            ui_draw_grid();
+            if (FFT_IsValid())
+            {
+                ui_draw_spectrum_trace();
+                ui_draw_peak_hold_marker();
+                ui_draw_peak_marker();
+            }
         }
     }
 
@@ -1079,6 +1109,11 @@ void UI_ShowAccelLive(void)
     ui.accel_live_hold_level_permille = 0U;
     memset(ui.accel_xyz_hold_level_permille, 0,
            sizeof(ui.accel_xyz_hold_level_permille));
+    ui.accel_live_hold_db_tenths = -900;
+    for (uint32_t axis = 0U; axis < 3U; axis++)
+    {
+        ui.accel_xyz_hold_db_tenths[axis] = -900;
+    }
     ui_apply_full_span();
     ui.graph_dirty = true;
     ui.controls_dirty = true;
@@ -1188,12 +1223,20 @@ void UI_SetAccelXYZSummary(bool running,
                sizeof(ui.accel_xyz_hold_magnitude));
         memset(ui.accel_xyz_hold_level_permille, 0,
                sizeof(ui.accel_xyz_hold_level_permille));
+        for (axis = 0U; axis < 3U; axis++)
+        {
+            ui.accel_xyz_hold_db_tenths[axis] = -900;
+        }
         memset(ui.accel_xyz_candidate_valid, 0,
                sizeof(ui.accel_xyz_candidate_valid));
         memset(ui.accel_xyz_candidate_hz, 0,
                sizeof(ui.accel_xyz_candidate_hz));
         memset(ui.accel_xyz_candidate_magnitude, 0,
                sizeof(ui.accel_xyz_candidate_magnitude));
+        for (axis = 0U; axis < 3U; axis++)
+        {
+            ui.accel_xyz_candidate_db_tenths[axis] = -900;
+        }
         memset(ui.accel_xyz_candidate_count, 0,
                sizeof(ui.accel_xyz_candidate_count));
         ui.accel_xyz_hold_settle_updates = 0U;
@@ -1239,6 +1282,8 @@ void UI_SetAccelXYZSummary(bool running,
                 {
                     ui.accel_xyz_candidate_magnitude[axis] = peak_mag[axis];
                     ui.accel_xyz_candidate_hz[axis] = peak_hz[axis];
+                    ui.accel_xyz_candidate_db_tenths[axis] =
+                        ui_live_magnitude_to_db_tenths(peak_mag[axis]);
                 }
                 if (ui.accel_xyz_candidate_count[axis] < 255U)
                 {
@@ -1250,6 +1295,8 @@ void UI_SetAccelXYZSummary(bool running,
                 ui.accel_xyz_candidate_valid[axis] = true;
                 ui.accel_xyz_candidate_hz[axis] = peak_hz[axis];
                 ui.accel_xyz_candidate_magnitude[axis] = peak_mag[axis];
+                ui.accel_xyz_candidate_db_tenths[axis] =
+                    ui_live_magnitude_to_db_tenths(peak_mag[axis]);
                 ui.accel_xyz_candidate_count[axis] = 1U;
             }
 
@@ -1268,6 +1315,8 @@ void UI_SetAccelXYZSummary(bool running,
                         ui.accel_xyz_candidate_hz[axis];
                     ui.accel_xyz_hold_magnitude[axis] =
                         ui.accel_xyz_candidate_magnitude[axis];
+                    ui.accel_xyz_hold_db_tenths[axis] =
+                        ui.accel_xyz_candidate_db_tenths[axis];
                     if (ui.magnitude_max > 0U)
                     {
                         uint64_t level =
@@ -1312,9 +1361,11 @@ void UI_SetAccelLiveStatus(bool running, uint32_t frames,
         ui.accel_live_hold_hz = 0U;
         ui.accel_live_hold_magnitude = 0U;
         ui.accel_live_hold_level_permille = 0U;
+        ui.accel_live_hold_db_tenths = -900;
         ui.accel_live_candidate_valid = false;
         ui.accel_live_candidate_hz = 0U;
         ui.accel_live_candidate_magnitude = 0U;
+        ui.accel_live_candidate_db_tenths = -900;
         ui.accel_live_candidate_count = 0U;
         ui.accel_live_hold_settle_updates = 0U;
     }
@@ -1344,6 +1395,8 @@ void UI_SetAccelLiveStatus(bool running, uint32_t frames,
             {
                 ui.accel_live_candidate_magnitude = magnitude;
                 ui.accel_live_candidate_hz = peak_hz;
+                ui.accel_live_candidate_db_tenths =
+                    ui_live_magnitude_to_db_tenths(magnitude);
             }
             if (ui.accel_live_candidate_count < 255U)
             {
@@ -1355,6 +1408,8 @@ void UI_SetAccelLiveStatus(bool running, uint32_t frames,
             ui.accel_live_candidate_valid = true;
             ui.accel_live_candidate_hz = peak_hz;
             ui.accel_live_candidate_magnitude = magnitude;
+            ui.accel_live_candidate_db_tenths =
+                ui_live_magnitude_to_db_tenths(magnitude);
             ui.accel_live_candidate_count = 1U;
         }
 
@@ -1371,6 +1426,8 @@ void UI_SetAccelLiveStatus(bool running, uint32_t frames,
                 ui.accel_live_hold_hz = ui.accel_live_candidate_hz;
                 ui.accel_live_hold_magnitude =
                     ui.accel_live_candidate_magnitude;
+                ui.accel_live_hold_db_tenths =
+                    ui.accel_live_candidate_db_tenths;
                 if (ui.magnitude_max > 0U)
                 {
                     uint64_t level =
@@ -2882,6 +2939,125 @@ static void ui_draw_db_peak_marker(void)
                      peak_x + 3,
                      marker_top,
                      COLOR_RED);
+}
+
+/* STAGE6A_DB_FINALIZATION_V1 */
+static int16_t ui_live_magnitude_to_db_tenths(uint32_t magnitude)
+{
+    float db;
+    int32_t tenths;
+
+    if (magnitude == 0U)
+    {
+        return -900;
+    }
+
+    db = 20.0f * log10f((float)magnitude / 2048.0f);
+    tenths = (int32_t)(db * 10.0f + ((db >= 0.0f) ? 0.5f : -0.5f));
+    if (tenths > 0) tenths = 0;
+    if (tenths < -900) tenths = -900;
+    return (int16_t)tenths;
+}
+
+/* STAGE6_LIVE_VIBRATION_DB_V1 */
+static int32_t ui_live_db_tenths_to_y(int16_t db_tenths)
+{
+    int32_t value = db_tenths;
+    uint32_t usable_height = (uint32_t)UI_GRAPH_HEIGHT - 2U;
+    if (value > 0) value = 0;
+    if (value < -900) value = -900;
+    return UI_GRAPH_TOP + 1 +
+           (int32_t)(((-value) * (int32_t)usable_height) / 900);
+}
+
+static void ui_draw_live_db_grid(void)
+{
+    static const int16_t levels[] = {0, -200, -400, -600, -800};
+    int32_t quarter_width = (int32_t)UI_GRAPH_WIDTH / 4;
+    Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
+                     UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
+    Display_DrawString(UI_GRAPH_RIGHT - 34, UI_GRAPH_TOP + 3,
+                       "dBFS", COLOR_CYAN, COLOR_BLACK);
+    for (uint32_t index = 0U;
+         index < (sizeof(levels) / sizeof(levels[0])); index++)
+    {
+        int32_t y = ui_live_db_tenths_to_y(levels[index]);
+        Display_DrawLine(UI_GRAPH_LEFT, y, UI_GRAPH_RIGHT, y,
+                         COLOR_DARK_GRAY);
+        ui_draw_signed_db(3, y + 1, levels[index], COLOR_GRAY);
+    }
+    for (int32_t x = UI_GRAPH_LEFT + quarter_width;
+         x < UI_GRAPH_RIGHT; x += quarter_width)
+    {
+        Display_DrawLine(x, UI_GRAPH_TOP, x, UI_GRAPH_BOTTOM,
+                         COLOR_DARK_GRAY);
+    }
+}
+
+static void ui_draw_live_db_spectrum_trace(void)
+{
+    uint32_t first_bin = ui.first_bin;
+    uint32_t last_bin = ui_last_visible_bin();
+    if (last_bin <= first_bin) return;
+    for (uint32_t bin = first_bin + 1U; bin <= last_bin; bin++)
+    {
+        int32_t x0 = ui_bin_to_x(bin - 1U);
+        int32_t y0 = ui_live_db_tenths_to_y(FFT_GetDbTenths(bin - 1U));
+        int32_t x1 = ui_bin_to_x(bin);
+        int32_t y1 = ui_live_db_tenths_to_y(FFT_GetDbTenths(bin));
+        Display_DrawLine(x0, y0, x1, y1, COLOR_GREEN);
+    }
+}
+
+static void ui_draw_live_db_peak_marker(void)
+{
+    uint32_t peak_bin = FFT_GetPeakBin();
+    uint32_t last_bin = ui_last_visible_bin();
+    int32_t x, y, top;
+    if ((peak_bin < ui.first_bin) || (peak_bin > last_bin)) return;
+    x = ui_bin_to_x(peak_bin);
+    y = ui_live_db_tenths_to_y(FFT_GetPeakDbTenths());
+    top = y - 10;
+    if (top < UI_GRAPH_TOP) top = UI_GRAPH_TOP;
+    Display_DrawLine(x, top, x, y, COLOR_RED);
+    Display_DrawLine(x - 3, top, x + 3, top, COLOR_RED);
+}
+
+static void ui_draw_live_db_peak_hold_marker(void)
+{
+    bool valid;
+    uint32_t hold_hz;
+    int16_t hold_db;
+    uint32_t bin_width, hold_bin, last_bin;
+    int32_t x, y, top;
+    if (ui.accel_live_source == 3U)
+    {
+        uint32_t axis = ui.accel_xyz_view_axis;
+        if (axis > 2U) axis = 0U;
+        valid = ui.accel_xyz_hold_valid[axis];
+        hold_hz = ui.accel_xyz_hold_hz[axis];
+        hold_db = ui.accel_xyz_hold_db_tenths[axis];
+    }
+    else
+    {
+        valid = ui.accel_live_hold_valid;
+        hold_hz = ui.accel_live_hold_hz;
+        hold_db = ui.accel_live_hold_db_tenths;
+    }
+    if (!valid) return;
+    bin_width = FFT_GetBinWidthMilliHz();
+    if (bin_width == 0U) return;
+    hold_bin = (uint32_t)((((uint64_t)hold_hz * 1000ULL) +
+                          ((uint64_t)bin_width / 2ULL)) /
+                         (uint64_t)bin_width);
+    last_bin = ui_last_visible_bin();
+    if ((hold_bin < ui.first_bin) || (hold_bin > last_bin)) return;
+    x = ui_bin_to_x(hold_bin);
+    y = ui_live_db_tenths_to_y(hold_db);
+    top = y - 10;
+    if (top < UI_GRAPH_TOP) top = UI_GRAPH_TOP;
+    Display_DrawLine(x, top, x, y, COLOR_CYAN);
+    Display_DrawLine(x - 4, top, x + 4, top, COLOR_CYAN);
 }
 
 static void ui_draw_grid(void)
