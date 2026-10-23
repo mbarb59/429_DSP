@@ -88,8 +88,14 @@
 #define UI_TOUCH_RELEASE_POLLS      2U
 
 /* UI_RECORDER_LABEL_FIX */
+/* STAGE7A_STANDALONE_MODE_BUTTON_V1 */
+#define UI_MODE_TAB_X              192
+#define UI_MODE_TAB_WIDTH           64
+/* STAGE7A_HOME_RETURN_V1 */
+#define UI_HOME_TAB_X              256
+#define UI_HOME_TAB_WIDTH           64
 #define UI_REC_TAB_X               256
-#define UI_REC_TAB_WIDTH           64
+#define UI_REC_TAB_WIDTH            64
 #define UI_REC_STATUS_REFRESH_MS   100U
 
 /* UI_WAV_BROWSER_V2_PATCH */
@@ -3213,6 +3219,31 @@ static void ui_draw_peak_marker(void)
                      COLOR_RED);
 }
 
+static void ui_draw_live_home_tab(void)
+{
+    uint16_t background = ui.accel_live_running ?
+                          COLOR_DARK_GRAY : COLOR_CYAN;
+    uint16_t foreground = ui.accel_live_running ?
+                          COLOR_GRAY : COLOR_BLACK;
+
+    /* STAGE7A_HOME_RETURN_V1: HOME is stop-first. */
+    Display_FillRect(UI_HOME_TAB_X,
+                     UI_STATUS_TOP + 1,
+                     UI_HOME_TAB_WIDTH - 1,
+                     UI_STATUS_HEIGHT - 2,
+                     background);
+    Display_DrawRect(UI_HOME_TAB_X,
+                     UI_STATUS_TOP,
+                     UI_HOME_TAB_WIDTH,
+                     UI_STATUS_HEIGHT,
+                     COLOR_WHITE);
+    Display_DrawString(UI_HOME_TAB_X + 12,
+                       UI_STATUS_TOP + 8,
+                       "HOME",
+                       foreground,
+                       background);
+}
+
 static void ui_draw_status(void)
 {
     if (UI_IsSourceSelectorVisible())
@@ -3266,6 +3297,7 @@ static void ui_draw_status(void)
         Display_DrawString(264, UI_STATUS_TOP + 8,
             axis_name[ui.accel_xyz_dominant_axis], COLOR_GREEN, COLOR_BLACK);
         if (any_clip) Display_DrawString(280, UI_STATUS_TOP + 8, "CLIP", COLOR_RED, COLOR_BLACK);
+        ui_draw_live_home_tab();
         return;
     }
 
@@ -3345,6 +3377,7 @@ static void ui_draw_status(void)
                      UI_STATUS_TOP + 8,
                      ui.accel_live_frames,
                      COLOR_WHITE);
+        ui_draw_live_home_tab();
         return;
     }
 
@@ -3375,6 +3408,7 @@ static void ui_draw_status(void)
         ui_draw_uint(208, UI_STATUS_TOP + 8, ui.accel_live_rms, COLOR_CYAN);
         Display_DrawString(246, UI_STATUS_TOP + 8, "F", COLOR_WHITE, COLOR_BLACK);
         ui_draw_uint(258, UI_STATUS_TOP + 8, ui.accel_live_frames, COLOR_YELLOW);
+        ui_draw_live_home_tab();
         return;
     }
     uint32_t first_bin = ui.first_bin;
@@ -3561,6 +3595,26 @@ static void ui_draw_status(void)
                              COLOR_GREEN);
         }
     }
+
+    /* STAGE7A_STANDALONE_MODE_BUTTON_V1
+     * MODE opens the existing source selector. It is disabled while the
+     * normal analyzer is running so source changes remain stop-first.
+     */
+    Display_FillRect(UI_MODE_TAB_X,
+                     UI_STATUS_TOP + 1,
+                     UI_MODE_TAB_WIDTH - 1,
+                     UI_STATUS_HEIGHT - 2,
+                     ui.running ? COLOR_DARK_GRAY : COLOR_CYAN);
+    Display_DrawRect(UI_MODE_TAB_X,
+                     UI_STATUS_TOP,
+                     UI_MODE_TAB_WIDTH,
+                     UI_STATUS_HEIGHT,
+                     COLOR_WHITE);
+    Display_DrawString(UI_MODE_TAB_X + 12,
+                       UI_STATUS_TOP + 8,
+                       "MODE",
+                       ui.running ? COLOR_GRAY : COLOR_BLACK,
+                       ui.running ? COLOR_DARK_GRAY : COLOR_CYAN);
 
     Display_FillRect(UI_REC_TAB_X,
                      UI_STATUS_TOP + 1,
@@ -4221,6 +4275,51 @@ static void ui_handle_touch_up(void)
             UART_SendString("UI RENAME KEY\r\n");
             action_executed = true;
         }
+    }
+    else if (!ui.dragging &&
+        UI_IsAccelLiveScreen() &&
+        !ui.accel_live_running &&
+        !ui.source_selector_visible &&
+        !ui.xyz_save_page &&
+        (ui.touch_start_y >= UI_STATUS_TOP) &&
+        (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.touch_start_x >= UI_HOME_TAB_X) &&
+        (ui.previous_touch_y >= UI_STATUS_TOP) &&
+        (ui.previous_touch_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.previous_touch_x >= UI_HOME_TAB_X))
+    {
+        /* STAGE7A_HOME_RETURN_V1 */
+        ui.accel_live_screen = false;
+        ui.accel_live_running = false;
+        ui.source_selector_visible = false;
+        ui.source_selector_value = 0U;
+        ui.xyz_save_page = false;
+        ui.running = false;
+        ui_apply_full_span();
+        ui.graph_dirty = true;
+        ui.controls_dirty = true;
+        Display_Clear(COLOR_BLACK);
+        UART_SendString("UI HOME ANALYZER SCREEN\r\n");
+        action_executed = true;
+    }
+    else if (!ui.dragging &&
+        (ui.mode == UI_MODE_ANALYZER) &&
+        !UI_IsAccelLiveScreen() &&
+        !ui.running &&
+        (ui.touch_start_y >= UI_STATUS_TOP) &&
+        (ui.touch_start_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.touch_start_x >= UI_MODE_TAB_X) &&
+        (ui.touch_start_x < (UI_MODE_TAB_X + UI_MODE_TAB_WIDTH)) &&
+        (ui.previous_touch_y >= UI_STATUS_TOP) &&
+        (ui.previous_touch_y < (UI_STATUS_TOP + UI_STATUS_HEIGHT)) &&
+        (ui.previous_touch_x >= UI_MODE_TAB_X) &&
+        (ui.previous_touch_x < (UI_MODE_TAB_X + UI_MODE_TAB_WIDTH)))
+    {
+        /* STAGE7A_STANDALONE_MODE_BUTTON_V1 */
+        UI_ShowAccelLive();
+        UI_ShowSourceSelector(0U);
+        UART_SendString("UI MODE SOURCE SELECTOR\r\n");
+        action_executed = true;
     }
     else if (!ui.dragging &&
         (ui.mode == UI_MODE_ANALYZER) &&
