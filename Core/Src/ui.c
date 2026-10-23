@@ -2983,7 +2983,7 @@ static void ui_draw_live_db_grid(void)
     Display_DrawRect(UI_GRAPH_LEFT, UI_GRAPH_TOP,
                      UI_GRAPH_WIDTH, UI_GRAPH_HEIGHT, COLOR_GRAY);
     Display_DrawString(UI_GRAPH_RIGHT - 34, UI_GRAPH_TOP + 3,
-                       "dBFS", COLOR_CYAN, COLOR_BLACK);
+                       "DBFS", COLOR_CYAN, COLOR_BLACK);
     for (uint32_t index = 0U;
          index < (sizeof(levels) / sizeof(levels[0])); index++)
     {
